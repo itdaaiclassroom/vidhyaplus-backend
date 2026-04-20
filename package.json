@@ -1,0 +1,47 @@
+{
+  "name": "vite_react_shadcn_ts",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "npm@10.2.5",
+  "scripts": {
+    "server": "node backend/server/index.js",
+    "start": "node backend/server/index.js",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:backend": "node --test backend/server/utils.test.js",
+    "test:all": "npm run test:backend && npm run test:frontend",
+    "test:ci": "npm run test:all",
+    "verify:live-quiz": "node scripts/verify-live-quiz-stack.mjs",
+    "verify:ai": "node scripts/verify-ai-stack.mjs",
+    "verify:system": "node scripts/verify-system-stack.mjs",
+    "seed:feb": "node scripts/seed-feb-and-timetables.mjs",
+    "reseed:social-topics": "node scripts/reseed-grade10-social-topics.mjs",
+    "sync:topic-syllabus-status": "node scripts/sync-topic-status-by-syllabus-month.mjs",
+    "sync:uploads-s3": "node scripts/sync-uploads-to-s3.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1020.0",
+    "archiver": "^7.0.1",
+    "baseline-browser-mapping": "^2.10.0",
+    "bcrypt": "^6.0.0",
+    "caniuse-lite": "^1.0.30001774",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "jszip": "^3.10.1",
+    "mysql2": "^3.11.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.32.0",
+    "@types/node": "^22.16.5",
+    "autoprefixer": "^10.4.21",
+    "eslint": "^9.32.0",
+    "globals": "^15.15.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.38.0"
+  }
+}

@@ -1,0 +1,9 @@
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+pypdf>=3.0.0
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+httpx>=0.25.0
+python-multipart>=0.0.6
+ddgs>=1.9.7
