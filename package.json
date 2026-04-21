@@ -1,0 +1,33 @@
+{
+  "name": "lms-backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node backend/server/index.js",
+    "server": "node backend/server/index.js",
+    "test:backend": "node --test backend/server/utils.test.js",
+    "verify:live-quiz": "node scripts/verify-live-quiz-stack.mjs",
+    "verify:ai": "node scripts/verify-ai-stack.mjs",
+    "verify:system": "node scripts/verify-system-stack.mjs",
+    "seed:feb": "node scripts/seed-feb-and-timetables.mjs",
+    "reseed:social-topics": "node scripts/reseed-grade10-social-topics.mjs",
+    "sync:topic-syllabus-status": "node scripts/sync-topic-status-by-syllabus-month.mjs",
+    "sync:uploads-s3": "node scripts/sync-uploads-to-s3.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1020.0",
+    "@aws-sdk/s3-request-presigner": "^3.1033.0",
+    "archiver": "^7.0.1",
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "jszip": "^3.10.1",
+    "mysql2": "^3.11.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.16.5"
+  }
+}

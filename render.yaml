@@ -1,0 +1,13 @@
+# Optional Blueprint for Render (adjust env in dashboard; do not commit secrets).
+services:
+  - type: web
+    name: digital-learning-lms
+    runtime: node
+    plan: starter
+    # DevDependencies (vite) required for `npm run build`; Render's production install skips them otherwise.
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Set in dashboard: MYSQL_*, S3_BUCKET, AWS_*, APP_BASE_URL, VITE_API_URL

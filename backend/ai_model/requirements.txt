@@ -1,0 +1,20 @@
+# AI API: chatbot (RAG + LLM) and recommendations (YouTube + E-resources)
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# Embeddings (shared by chatbot and recommendations)
+sentence-transformers>=2.2.0
+
+# RAG (chatbot) – optional; server starts without these if files missing
+faiss-cpu>=1.7.0
+numpy>=1.24.0
+
+# LLM (chatbot)
+transformers>=4.30.0
+torch>=2.0.0
+
+# Recommendations: YouTube + search
+google-api-python-client>=2.0.0
+duckduckgo-search>=4.0.0
