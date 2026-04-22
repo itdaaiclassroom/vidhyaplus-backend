@@ -9,7 +9,7 @@
 --
 -- Idempotent for the Feb 2026 10-A slice: deletes prior seeded quiz rows + live_quiz-linked marks for that slice, then rebuilds.
 
-USE lms;
+USE railway;
 
 SET SQL_SAFE_UPDATES = 0;
 
