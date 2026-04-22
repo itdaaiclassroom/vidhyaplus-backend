@@ -2,13 +2,13 @@
 -- Phase 1: Roles + School/Class/Section + Students roll_no + static QR codes
 -- Next phases (syllabus/materials, quizzes, attendance, performance) will extend this file.
 
-DROP DATABASE IF EXISTS lms;
+DROP DATABASE IF EXISTS railway;
 
-CREATE DATABASE lms
+CREATE DATABASE railway
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
 
-USE lms;
+USE railway;
 
 -- =========================
 -- Schools / Class structure

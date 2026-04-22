@@ -4,7 +4,7 @@
 -- Legacy: `topics_and_micro_lessons_fill.sql` / `topics_micro_seed.sql` — regenerate via `scripts/generate_grade10_curriculum_sql.py` if needed.
 -- It reports what is loaded, what is missing, and basic consistency checks.
 
-USE lms;
+USE railway;
 
 -- =====================================
 -- 0) Optional: clear visual separator

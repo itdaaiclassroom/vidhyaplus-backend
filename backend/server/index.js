@@ -361,7 +361,7 @@ function pickLanIpv4() {
 
 function getPublicAppBase(req) {
   const fromEnv = getEnvPublicWebOrigin();
-  if (fromEnv) return fromEnv;
+  if (fromEnv && !/localhost|127\.0\.0\.1/i.test(fromEnv)) return fromEnv;
   const host = String(req.headers.host || "");
   const lan = pickLanIpv4();
   if (host && !/localhost|127\.0\.0\.1/i.test(host)) {
@@ -373,7 +373,7 @@ function getPublicAppBase(req) {
 
 function getPublicApiBase(req) {
   const fromEnv = getEnvPublicWebOrigin();
-  if (fromEnv) return fromEnv;
+  if (fromEnv && !/localhost|127\.0\.0\.1/i.test(fromEnv)) return fromEnv;
   const host = String(req.headers.host || "");
   const lan = pickLanIpv4();
   if (host && !/localhost|127\.0\.0\.1/i.test(host)) {
@@ -2954,6 +2954,7 @@ app.get("/live-quiz-scan", (req, res) => {
       .ok { color: #166534; font-size: 13px; margin-top: 6px; }
       .err { color: #b91c1c; font-size: 13px; margin-top: 6px; }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
   </head>
   <body>
     <div class="card">
@@ -2968,6 +2969,7 @@ app.get("/live-quiz-scan", (req, res) => {
       <button id="startCamBtn">Start camera</button>
       <button id="stopCamBtn" style="background:#6b7280;">Stop camera</button>
     </div>
+    <canvas id="canvas" style="display:none;"></canvas>
     <div class="card">
       <label class="muted">Question number</label>
       <input id="qno" type="number" min="1" value="1" />
@@ -3129,15 +3131,9 @@ app.get("/live-quiz-scan", (req, res) => {
         if (!video) return;
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           msgEl.className = "err";
-          msgEl.textContent = "Camera not supported on this browser.";
+          msgEl.textContent = "Camera access failed. Note: Mobile browsers REQUIRE an HTTPS connection for camera access. Try using ngrok for a secure tunnel.";
           return;
         }
-        if (!("BarcodeDetector" in window)) {
-          msgEl.className = "err";
-          msgEl.textContent = "QR scanning requires BarcodeDetector support in this browser.";
-          return;
-        }
-        detector = new BarcodeDetector({ formats: ["qr_code"] });
         cameraRunning = true;
         try {
           cameraStream = await navigator.mediaDevices.getUserMedia({
@@ -3149,46 +3145,59 @@ app.get("/live-quiz-scan", (req, res) => {
         } catch (e) {
           cameraRunning = false;
           msgEl.className = "err";
-          msgEl.textContent = e && e.message ? e.message : "Camera permission denied";
+          msgEl.textContent = "Camera permission denied or not available. (Check if site is HTTPS)";
           return;
         }
+
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
         const scanFrame = async () => {
           if (!cameraRunning) return;
           const v = document.getElementById("video");
           if (!v || v.readyState < 2) {
-            setTimeout(scanFrame, 250);
+            requestAnimationFrame(scanFrame);
             return;
           }
           try {
-            const barcodes = await detector.detect(v);
-            if (barcodes && barcodes.length > 0) {
-              const raw = barcodes[0].rawValue;
-              const now = Date.now();
-              if (raw && (raw !== lastAutoRaw || (now - lastAutoAt) > 1500)) {
-                lastAutoRaw = raw;
-                lastAutoAt = now;
-                const parsed = parseStudentQr(raw);
-                if (parsed) {
-                  try {
-                    await bufferQr(qnoValue(), raw);
-                    document.getElementById("qr").value = "";
-                  } catch (e) {
-                    // duplicates / not started are normal; don't spam
+            if (v.videoWidth > 0 && v.videoHeight > 0) {
+              canvas.width = v.videoWidth;
+              canvas.height = v.videoHeight;
+              ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                inversionAttempts: "dontInvert",
+              });
+
+              if (code && code.data) {
+                const raw = code.data;
+                const now = Date.now();
+                if (raw && (raw !== lastAutoRaw || (now - lastAutoAt) > 1500)) {
+                  lastAutoRaw = raw;
+                  lastAutoAt = now;
+                  const parsed = parseStudentQr(raw);
+                  if (parsed) {
+                    try {
+                      await bufferQr(qnoValue(), raw);
+                      document.getElementById("qr").value = "";
+                    } catch (e) {
+                      msgEl.className = "muted";
+                      msgEl.textContent = e && e.message ? e.message : "Scan ignored";
+                    }
+                  } else {
                     msgEl.className = "muted";
-                    msgEl.textContent = e && e.message ? e.message : "Scan ignored";
+                    msgEl.textContent = "Scanned invalid QR: " + String(raw).slice(0, 20);
                   }
-                } else {
-                  msgEl.className = "muted";
-                  msgEl.textContent = "Scanned invalid QR";
                 }
               }
             }
-          } catch (_) {}
-          setTimeout(scanFrame, 250);
+          } catch (err) {
+            console.error("Scan error:", err);
+          }
+          requestAnimationFrame(scanFrame);
         };
 
-        scanFrame();
+        requestAnimationFrame(scanFrame);
       }
 
       function stopCamera() {
@@ -3568,6 +3577,7 @@ app.get("/api/student-marks", async (req, res) => {
 });
 
 // Admin: set or upload chapter textbook (replaces existing)
+// Admin: set or upload chapter textbook (replaces existing). Pass either path or { file: base64, filename }.
 app.put("/api/chapters/:id/textbook", async (req, res) => {
   const db = getPool();
   const chapterId = Number(req.params.id);
@@ -3576,15 +3586,18 @@ app.put("/api/chapters/:id/textbook", async (req, res) => {
   try {
     let relativePath = pathOnly && String(pathOnly).trim();
     if (base64File && typeof base64File === "string") {
-      const ext = filename && /\.(pdf|pptx?)$/i.test(filename) ? path.extname(filename).toLowerCase() : ".pdf";
+      const ext = filename && filename.toLowerCase().endsWith(".pdf") ? ".pdf" : ".pdf";
       const safeName = `chapter_${chapterId}${ext}`;
       const buf = Buffer.from(base64File, "base64");
       relativePath = path.join("textbook", safeName).replace(/\\/g, "/");
-      const mime = ext === ".pdf" ? "application/pdf" : "application/octet-stream";
-      await assetStorage.saveUploadBuffer(relativePath, buf, mime);
+      await assetStorage.saveUploadBuffer(relativePath, buf, "application/pdf");
     }
+
     if (!relativePath) return res.status(400).json({ error: "path or file required" });
-    await db.query("UPDATE chapters SET textbook_chunk_pdf_path = ? WHERE id = ?", [relativePath, chapterId]);
+
+    // Normalize
+    relativePath = assetStorage.normalizeUploadKey(relativePath);
+
     await db.query(
       "INSERT INTO chapter_textual_materials (chapter_id, pdf_url, title) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE pdf_url = VALUES(pdf_url), title = VALUES(title)",
       [chapterId, relativePath, `Chapter ${chapterId} textbook`]
@@ -3596,14 +3609,37 @@ app.put("/api/chapters/:id/textbook", async (req, res) => {
         await db.query("INSERT INTO chapter_textual_materials (chapter_id, pdf_url, title) VALUES (?, ?, ?)", [chapterId, relativePath, `Chapter ${chapterId} textbook`]);
       }
     });
-    res.json({ path: relativePath });
+
+    res.json({ ok: true, path: relativePath, publicUrl: assetStorage.getPublicUrl(relativePath) });
   } catch (err) {
     console.error("PUT /api/chapters/:id/textbook error:", err);
     res.status(500).json({ error: String(err.message) });
   }
 });
 
-// Admin: set or upload topic PPT (replaces existing). Converts to PDF for in-browser viewing.
+/**
+ * DELETE /api/chapters/:id/textbook
+ * Removes textual material from DB and deletes file from R2/storage.
+ */
+app.delete("/api/chapters/:id/textbook", async (req, res) => {
+  const db = getPool();
+  const chapterId = Number(req.params.id);
+  if (!chapterId) return res.status(400).json({ error: "chapter id required" });
+  try {
+    const [rows] = await db.query("SELECT pdf_url FROM chapter_textual_materials WHERE chapter_id = ?", [chapterId]);
+    const record = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    if (record?.pdf_url) {
+      await assetStorage.deleteUpload(record.pdf_url);
+    }
+    await db.query("DELETE FROM chapter_textual_materials WHERE chapter_id = ?", [chapterId]);
+    res.json({ ok: true, message: "Textbook deleted" });
+  } catch (err) {
+    console.error("DELETE /api/chapters/:id/textbook error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+// Admin: set or upload topic PPT (replaces existing).
 app.put("/api/topics/:id/ppt", async (req, res) => {
   const db = getPool();
   const topicId = Number(req.params.id);
@@ -3623,6 +3659,8 @@ app.put("/api/topics/:id/ppt", async (req, res) => {
             ? "application/vnd.ms-powerpoint"
             : "application/vnd.openxmlformats-officedocument.presentationml.presentation";
       await assetStorage.saveUploadBuffer(relativePath, buf, pptMime);
+      
+      // Attempt conversion for viewing if it's a PPTX and we have base64 locally
       if (ext === ".pptx" || ext === ".ppt") {
         const tmp = path.join(os.tmpdir(), safeName);
         try {
@@ -3635,15 +3673,18 @@ app.put("/api/topics/:id/ppt", async (req, res) => {
             console.log("[ppt] Converted to PDF for viewing:", pdfName);
           }
         } catch (e) {
-          console.warn("[ppt] PDF conversion skipped (install LibreOffice for in-browser view):", e.message);
+          console.warn("[ppt] PDF conversion failed/skipped:", e.message);
         } finally {
-          try {
-            fs.unlinkSync(tmp);
-          } catch (_) {}
+          try { fs.unlinkSync(tmp); } catch (_) {}
         }
       }
     }
+    
     if (!relativePath) return res.status(400).json({ error: "path or file required" });
+    
+    // Normalize path
+    relativePath = assetStorage.normalizeUploadKey(relativePath);
+
     await db.query("UPDATE topics SET topic_ppt_path = ? WHERE id = ?", [relativePath, topicId]);
     await db.query(
       "INSERT INTO topic_ppt_materials (topic_id, ppt_url, title) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE ppt_url = VALUES(ppt_url), title = VALUES(title)",
@@ -3656,12 +3697,170 @@ app.put("/api/topics/:id/ppt", async (req, res) => {
         await db.query("INSERT INTO topic_ppt_materials (topic_id, ppt_url, title) VALUES (?, ?, ?)", [topicId, relativePath, `Topic ${topicId} PPT`]);
       }
     });
-    res.json({ path: relativePath });
+    res.json({ ok: true, path: relativePath, publicUrl: assetStorage.getPublicUrl(relativePath) });
   } catch (err) {
     console.error("PUT /api/topics/:id/ppt error:", err);
     res.status(500).json({ error: String(err.message) });
   }
 });
+
+/**
+ * DELETE /api/topics/:id/ppt
+ * Removes PPT reference from topics table and topic_ppt_materials.
+ */
+app.delete("/api/topics/:id/ppt", async (req, res) => {
+  const db = getPool();
+  const topicId = Number(req.params.id);
+  if (!topicId) return res.status(400).json({ error: "topic id required" });
+  try {
+    const [rows] = await db.query("SELECT ppt_url FROM topic_ppt_materials WHERE topic_id = ?", [topicId]);
+    const record = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    if (record?.ppt_url) {
+      await assetStorage.deleteUpload(record.ppt_url);
+    }
+    await db.query("UPDATE topics SET topic_ppt_path = NULL WHERE id = ?", [topicId]);
+    await db.query("DELETE FROM topic_ppt_materials WHERE topic_id = ?", [topicId]);
+    res.json({ ok: true, message: "PPT deleted" });
+  } catch (err) {
+    console.error("DELETE /api/topics/:id/ppt error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+// ─── Cloudflare R2 / Object Storage API ──────────────────────────────────────
+
+/**
+ * GET /api/storage/health
+ * Returns whether R2 object storage is configured and active.
+ * Credentials are never exposed in the response.
+ */
+app.get("/api/storage/health", (req, res) => {
+  res.json({
+    ok: true,
+    r2Enabled: assetStorage.r2Enabled(),
+    objectStorageEnabled: assetStorage.objectStorageEnabled(),
+    bucket: assetStorage.r2Enabled() ? process.env.R2_BUCKET_NAME : (process.env.S3_BUCKET || null),
+    publicUrlPrefix: process.env.R2_PUBLIC_URL || process.env.S3_PUBLIC_URL || null,
+  });
+});
+
+/**
+ * POST /api/storage/presign
+ * Generate a presigned PUT URL for direct browser → R2 upload.
+ *
+ * Body: { key: string, contentType?: string, expiresIn?: number }
+ *
+ * Response: { uploadUrl, publicUrl, key }
+ *
+ * The browser uses the returned `uploadUrl` to PUT the file directly to R2,
+ * then stores only the `key` or `publicUrl` in the DB via the normal API.
+ * Credentials NEVER leave the server.
+ */
+app.post("/api/storage/presign", async (req, res) => {
+  try {
+    const { key, contentType = "application/octet-stream", expiresIn = 900 } = req.body || {};
+    if (!key || typeof key !== "string" || !key.trim()) {
+      return res.status(400).json({ error: "key is required" });
+    }
+    const safeKey = key.trim().replace(/\\/g, "/").replace(/^\//, "");
+    // Rudimentary path traversal guard
+    if (safeKey.includes("..")) {
+      return res.status(400).json({ error: "Invalid key" });
+    }
+    if (!assetStorage.objectStorageEnabled()) {
+      return res.status(503).json({ error: "Object storage not configured. Set R2_* environment variables on the server." });
+    }
+    const result = await assetStorage.getPresignedPutUrl(safeKey, contentType, Number(expiresIn) || 900);
+    if (!result) {
+      return res.status(503).json({ error: "Failed to generate presigned URL" });
+    }
+    res.json(result);
+  } catch (err) {
+    console.error("[storage] POST /api/storage/presign error:", err.message);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+/**
+ * DELETE /api/storage/file
+ * Delete a file from R2 / object storage.
+ *
+ * Body: { key: string }
+ * Response: { ok: boolean, key: string }
+ */
+app.delete("/api/storage/file", async (req, res) => {
+  try {
+    const { key } = req.body || {};
+    if (!key || typeof key !== "string" || !key.trim()) {
+      return res.status(400).json({ error: "key is required" });
+    }
+    const safeKey = key.trim().replace(/\\/g, "/").replace(/^\//, "");
+    if (safeKey.includes("..")) {
+      return res.status(400).json({ error: "Invalid key" });
+    }
+    const deleted = await assetStorage.deleteUpload(safeKey);
+    res.json({ ok: deleted, key: safeKey });
+  } catch (err) {
+    console.error("[storage] DELETE /api/storage/file error:", err.message);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+/**
+ * GET /api/storage/files?prefix=textbook/
+ * List files stored under a given prefix in R2.
+ * Response: { files: [{ key, publicUrl, size, lastModified }] }
+ */
+app.get("/api/storage/files", async (req, res) => {
+  try {
+    const prefix = String(req.query.prefix || "").replace(/\\/g, "/").replace(/^\//, "");
+    const maxKeys = Math.min(Number(req.query.limit) || 200, 1000);
+    if (prefix.includes("..")) {
+      return res.status(400).json({ error: "Invalid prefix" });
+    }
+    const files = await assetStorage.listUploads(prefix, maxKeys);
+    res.json({ files });
+  } catch (err) {
+    console.error("[storage] GET /api/storage/files error:", err.message);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+/**
+ * POST /api/storage/upload-server
+ * Server-side upload: accepts base64-encoded file in JSON body and uploads to R2.
+ * Use this only for server-to-server scenarios or when presigned URL upload is not viable.
+ *
+ * Body: { key: string, file: string (base64), contentType?: string }
+ * Response: { ok: boolean, key: string, publicUrl: string }
+ */
+app.post("/api/storage/upload-server", async (req, res) => {
+  try {
+    const { key, file, contentType = "application/octet-stream" } = req.body || {};
+    if (!key || typeof key !== "string" || !key.trim()) {
+      return res.status(400).json({ error: "key is required" });
+    }
+    if (!file || typeof file !== "string") {
+      return res.status(400).json({ error: "file (base64) is required" });
+    }
+    const safeKey = key.trim().replace(/\\/g, "/").replace(/^\//, "");
+    if (safeKey.includes("..")) {
+      return res.status(400).json({ error: "Invalid key" });
+    }
+    const buffer = Buffer.from(file.replace(/^data:[^;]+;base64,/, ""), "base64");
+    if (buffer.length === 0) {
+      return res.status(400).json({ error: "file content is empty" });
+    }
+    await assetStorage.saveUploadBuffer(safeKey, buffer, contentType);
+    const publicUrl = assetStorage.getPublicUrl(safeKey);
+    res.json({ ok: true, key: safeKey, publicUrl });
+  } catch (err) {
+    console.error("[storage] POST /api/storage/upload-server error:", err.message);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+// ─── End Cloudflare R2 API ────────────────────────────────────────────────────
 
 // Unknown /api routes → JSON 404
 app.use("/api", (req, res, next) => {
@@ -3694,9 +3893,11 @@ app.listen(Number(PORT), HOST, () => {
   } else {
     console.log("[qr] No QR_BASE_URL/APP_BASE_URL — live-quiz QR falls back to request Host or LAN IP");
   }
-  if (assetStorage.objectStorageEnabled()) {
+  if (assetStorage.r2Enabled()) {
+    console.log(`[uploads] Storage: Cloudflare R2 (bucket=${process.env.R2_BUCKET_NAME}, publicUrl=${process.env.R2_PUBLIC_URL || "not set"})`);
+  } else if (assetStorage.objectStorageEnabled()) {
     const b = process.env.S3_BUCKET || process.env.AWS_S3_BUCKET;
-    console.log(`[uploads] Storage: S3 (bucket=${b}, region=${process.env.AWS_REGION || "us-east-1"})`);
+    console.log(`[uploads] Storage: S3-compatible (bucket=${b}, region=${process.env.AWS_REGION || "us-east-1"})`);
   } else {
     console.log(`[uploads] Storage: local directory ${uploadsDir}`);
   }

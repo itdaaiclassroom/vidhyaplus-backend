@@ -1,7 +1,7 @@
 -- Admin dashboard production upgrades
 -- Run once on the target DB before using admin dynamic features.
 
-USE lms;
+USE railway;
 
 -- 1) Schools metadata used by admin forms/cards
 SET @q := IF(
