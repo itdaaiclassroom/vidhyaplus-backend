@@ -1,5 +1,4 @@
-// In dev, call backend directly to avoid Vite proxy 405 on POST
-const BASE = import.meta.env.DEV ? 'http://localhost:8001' : ''
+const BASE = (import.meta as any).env?.DEV ? 'http://localhost:8001' : (import.meta as any).env?.VITE_API_URL || ''
 
 export interface Chapter {
   id: string
