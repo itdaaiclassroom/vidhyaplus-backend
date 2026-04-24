@@ -1,10 +1,12 @@
-"""Chatbot module: RAG + LLM only. POST /ask returns { question, answer }."""
 import os
+import requests
 from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter
+from typing import Optional
 from pydantic import BaseModel
+
 
 _here = Path(__file__).resolve().parent
 
@@ -55,8 +57,34 @@ except Exception as e:
 print(f"[chatbot] LLM ready: task={llm_task} model={_model_name if llm_task=='text2text-generation' else (os.environ.get('CHATBOT_FALLBACK_MODEL') or 'distilgpt2')}")
 
 
+def call_ollama(prompt: str, model: str = "llama3") -> Optional[str]:
+    """Helper to call local Ollama API if running."""
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "num_predict": 150
+                }
+            },
+            timeout=45
+        )
+        if response.status_code == 200:
+            return response.json().get("response")
+    except Exception:
+        pass
+    return None
+
+
 class Question(BaseModel):
     question: str
+    topic: Optional[str] = None
+    subject: Optional[str] = None
+    chapter: Optional[str] = None
+
 
 
 def retrieve_chunks(question: str, k: int = 5):
@@ -85,9 +113,10 @@ def _dedupe_answer(text: str) -> str:
             continue
         key = part[:80].lower()
         if key in seen:
-            break
+            continue
         seen.add(key)
         out.append(part)
+
     result = "\n\n".join(out).strip()
     sentences = [s.strip() for s in result.split(". ") if s.strip()]
     if len(sentences) >= 2 and sentences[0] == sentences[1]:
@@ -101,22 +130,47 @@ def _dedupe_answer(text: str) -> str:
 
 
 @lru_cache(maxsize=256)
-def generate_answer(question: str) -> str:
+def generate_answer(question: str, topic: Optional[str] = None, subject: Optional[str] = None, chapter: Optional[str] = None) -> str:
     if llm is None or llm_task is None:
         return "Chatbot model is not available on the server. Please restart the AI server after installing model dependencies."
-    retrieved = retrieve_chunks(question)
-    if not retrieved:
-        return "I couldn't find relevant content for that question. Please try rephrasing or ask about a different topic."
-    context = "\n\n".join(retrieved[:5])[:2000]  # Limit context length for faster inference
-    prompt = f"""You are a class 10 teaching assistant.
-Answer ONLY from the context. If the context does not contain the answer, say: "Not found in the given context."
+    
+    # Enrich retrieval with topic/subject/chapter if question is short
+    retrieval_query = question
+    if (topic or chapter) and len(question) < 40:
+        retrieval_query = f"{subject or ''} {chapter or ''} {topic or ''}: {question}"
+        
+    retrieved = retrieve_chunks(retrieval_query)
+    if not retrieved and topic:
+        # fallback to general topic search if specific question failed
+        retrieved = retrieve_chunks(topic)
+    
+    context = "\n\n".join(retrieved[:5])[:2000] if retrieved else ""
+    
+    # If no context found, we allow the LLM to use its internal knowledge but with a note.
+    # This makes the AI feel "smarter" and more helpful.
+    context_note = ""
+    if not context:
+        context_note = "(Note: Answering from general knowledge as this specific detail isn't in the uploaded syllabus chunks.)"
+        context = f"Subject: {subject}. Chapter: {chapter}. Topic: {topic}."
 
-Context:
-{context}
+    prompt = f"""You are an expert Class 10 {subject or 'Subject'} teacher.
+Context: Chapter "{chapter or 'General'}", Topic "{topic or 'General'}".
+
+Answer the student's question in a smart, professional, and CONCISE way (max 2-3 sentences).
+Do not use generic greetings or long introductions. Get straight to the point.
 
 Question: {question}
-
 Answer:"""
+
+    # Try Ollama (Llama 3) first for high quality
+    ollama_response = call_ollama(prompt)
+    if ollama_response:
+        return _dedupe_answer(ollama_response)
+
+
+
+
+
 
     if llm_task == "text2text-generation":
         response = llm(
@@ -155,10 +209,11 @@ def ask(q: Question):
     if not question:
         return {"question": "", "answer": "Please ask a question."}
     try:
-        answer = generate_answer(question)
+        answer = generate_answer(question, q.topic, q.subject, q.chapter)
         return {"question": question, "answer": answer}
     except Exception as e:
         return {"question": question, "answer": f"Sorry, I couldn't process that. Please try again. ({str(e)[:80]})"}
+
 
 
 class GenerateQuizBody(BaseModel):
@@ -237,6 +292,15 @@ Context:
 {context}
 
 Generate 10 questions:"""
+
+    # Try Ollama first for high quality quizzes
+    ollama_raw = call_ollama(prompt)
+    if ollama_raw:
+        out = _parse_mcqs_from_text(ollama_raw, 10)
+        if len(out) >= 5: # Only return if we got at least 5 good questions
+            return {"questions": out[:10]}
+
+    out = []
     out = []
     try:
         if llm_task == "text2text-generation" and llm:
