@@ -16,6 +16,7 @@ import shared_embeddings  # noqa: F401
 
 from chatbot import router as chatbot_router
 from recommendations import router as recommendations_router
+from segmentation import router as segmentation_router
 
 app = FastAPI()
 
@@ -29,6 +30,7 @@ app.add_middleware(
 
 app.include_router(chatbot_router)
 app.include_router(recommendations_router)
+app.include_router(segmentation_router)
 
 
 def _validate_ai_env() -> None:

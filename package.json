@@ -6,6 +6,7 @@
   "packageManager": "npm@10.2.5",
   "scripts": {
     "server": "node backend/server/index.js",
+    "ai": "cd backend/ai_model && py -m uvicorn api:app --port 8001",
     "start": "node backend/server/index.js",
     "lint": "eslint .",
     "test": "vitest run",

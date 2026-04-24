@@ -2373,6 +2373,28 @@ async function fetchQuizQuestions(topicName, subjectName, grade = 10, meta = {})
   const topicIdNum = meta && meta.topicId != null ? Number(meta.topicId) : null;
   const subjectText = String(subjectName || "").toLowerCase();
   const topicText = String(topicName || "").toLowerCase();
+
+  // Try AI server first
+  try {
+    const aiRes = await fetch("http://localhost:8001/generate_quiz", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topic_name: topicName, subject: subjectName, grade }),
+    });
+    if (aiRes.ok) {
+      const data = await aiRes.json();
+      if (data.questions && data.questions.length > 0) {
+        const normalized = normalizeQuizQuestions(data.questions);
+        if (normalized.length > 0) {
+          liveQuizCheckpoint("fetchQuizQuestions:ai_success", { topicId: topicIdNum, topicName, count: normalized.length });
+          return normalized;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[ai] AI server fetch failed, using fallback:", e.message);
+  }
+
   const shouldUseStaticSocial =
     STATIC_SOCIAL_CH1_TOPIC_IDS.has(topicIdNum) ||
     (subjectText.includes("social") && (topicText.includes("relief") || topicText.includes("india")));
@@ -3723,6 +3745,78 @@ app.put("/api/chapters/:id/textbook", async (req, res) => {
     res.json({ ok: true, path: relativePath, publicUrl: assetStorage.getPublicUrl(relativePath) });
   } catch (err) {
     console.error("PUT /api/chapters/:id/textbook error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+/**
+ * POST /api/chapters/:id/auto-workflow
+ * AI-powered chapter processing: segments PDF into topics, generates PPTs and Quizzes.
+ */
+app.post("/api/chapters/:id/auto-workflow", async (req, res) => {
+  const db = getPool();
+  const chapterId = Number(req.params.id);
+  if (!chapterId) return res.status(400).json({ error: "chapter id required" });
+
+  try {
+    const [chapters] = await db.query(
+      "SELECT c.chapter_name, s.subject_name, c.grade_id, ctm.pdf_url FROM chapters c JOIN subjects s ON s.id = c.subject_id LEFT JOIN chapter_textual_materials ctm ON ctm.chapter_id = c.id WHERE c.id = ?",
+      [chapterId]
+    );
+    const chapter = chapters && chapters[0];
+    if (!chapter) return res.status(404).json({ error: "Chapter not found" });
+    if (!chapter.pdf_url) return res.status(400).json({ error: "No textbook PDF uploaded for this chapter" });
+
+    // AI Server: Segmentation
+    const pdfPath = path.resolve(process.cwd(), "uploads", chapter.pdf_url);
+    const segmentRes = await fetch("http://localhost:8001/segment_chapter", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pdf_path: pdfPath, subject: chapter.subject_name, grade: chapter.grade_id }),
+    });
+    if (!segmentRes.ok) throw new Error("AI Segmentation service failed");
+    const { topics } = await segmentRes.json();
+
+    const results = [];
+    for (const t of topics || []) {
+      // 1. Create Topic
+      const [topicInsert] = await db.query(
+        "INSERT INTO topics (chapter_id, name, order_num) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)",
+        [chapterId, t.name, t.order_num]
+      );
+      let topicId = topicInsert.insertId;
+      if (!topicId) {
+        const [existing] = await db.query("SELECT id FROM topics WHERE chapter_id = ? AND name = ?", [chapterId, t.name]);
+        topicId = existing && existing[0] ? existing[0].id : null;
+      }
+      if (!topicId) continue;
+
+      // 2. Generate PPT (simulated)
+      const pptRes = await fetch(`http://localhost:8001/generate_ppt?topic_name=${encodeURIComponent(t.name)}&subject=${encodeURIComponent(chapter.subject_name)}`, {
+        method: "POST"
+      });
+      const pptData = await pptRes.json();
+      await db.query(
+        "INSERT INTO topic_ppt_materials (topic_id, ppt_url, title) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE ppt_url = VALUES(ppt_url)",
+        [topicId, pptData.ppt_url || "", `${t.name} Presentation`]
+      );
+
+      // 3. Generate Quiz Bank
+      const questions = await fetchQuizQuestions(t.name, chapter.subject_name, chapter.grade_id, { topicId, chapterId });
+      await db.query("DELETE FROM topic_quiz_bank WHERE topic_id = ?", [topicId]);
+      for (const q of questions) {
+        await db.query(
+          "INSERT INTO topic_quiz_bank (topic_id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          [topicId, q.question_text, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_option, q.explanation]
+        );
+      }
+
+      results.push({ topicId, name: t.name, pptUrl: pptData.ppt_url, questionsGenerated: questions.length });
+    }
+
+    res.json({ ok: true, chapterId, results });
+  } catch (err) {
+    console.error("auto-workflow error:", err);
     res.status(500).json({ error: String(err.message) });
   }
 });
