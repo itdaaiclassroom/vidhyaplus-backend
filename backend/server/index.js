@@ -29,6 +29,7 @@ const uploadsDir = process.env.UPLOADS_DIR
   ? path.resolve(process.env.UPLOADS_DIR)
   : path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+app.use("/uploads", express.static(uploadsDir));
 const qrcodesDir = path.join(uploadsDir, "qrcodes");
 const textbookDir = path.join(uploadsDir, "textbook");
 const pptDir = path.join(uploadsDir, "ppt");
@@ -232,14 +233,25 @@ async function verifyPassword(candidate, storedHashOrPlain) {
 async function generateStudentQRCodes(db, studentId) {
   const sid = Number(studentId);
   if (!sid) return [];
-  const [studentRows] = await db.query("SELECT roll_no FROM students WHERE id = ? LIMIT 1", [sid]);
-  const rollNo = Array.isArray(studentRows) && studentRows[0] ? String(studentRows[0].roll_no || sid) : String(sid);
-  const created = [];
-  for (const qrType of QR_TYPES) {
-    const token = `stu${rollNo}_${qrType}`;
-    const webOrigin = getEnvPublicWebOrigin() || APP_BASE_URL;
-    const qrCodeValue = qrType === "DATA" ? `${webOrigin}/student/qr/${encodeURIComponent(token)}` : token;
-    const filename = `${rollNo}_${qrType}.png`;
+    const [studentRows] = await db.query("SELECT roll_no, category FROM students WHERE id = ? LIMIT 1", [sid]);
+    const student = studentRows && studentRows[0] ? studentRows[0] : null;
+    const rollNo = student ? String(student.roll_no || sid) : String(sid);
+    const category = student ? String(student.category || "General") : "General";
+    
+    const created = [];
+    for (const qrType of QR_TYPES) {
+      const token = `stu${rollNo}_${qrType}`;
+      const webOrigin = getEnvPublicWebOrigin() || APP_BASE_URL;
+      
+      // Requirement #4: QR Code should contain Student ID and Assigned Option (category)
+      let qrCodeValue;
+      if (qrType === "DATA") {
+        qrCodeValue = `${webOrigin}/student/qr/${encodeURIComponent(token)}?id=${rollNo}&option=${encodeURIComponent(category)}`;
+      } else {
+        qrCodeValue = token;
+      }
+      
+      const filename = `${rollNo}_${qrType}.png`;
     const relativePath = "qrcodes/" + filename;
     try {
       const pngBuf = await QRCode.toBuffer(qrCodeValue, { type: "png", margin: 1 });
@@ -573,7 +585,7 @@ app.post("/api/auth/login/teacher", async (req, res) => {
   try {
     const db = getPool();
     const [rows] = await db.query(
-      "SELECT id, email, full_name, school_id, password FROM teachers WHERE email = ? LIMIT 1",
+      "SELECT id, email, full_name, school_id, role, password FROM teachers WHERE email = ? LIMIT 1",
       [emailTrim]
     );
     const teacher = Array.isArray(rows) && rows[0] ? rows[0] : null;
@@ -585,6 +597,7 @@ app.post("/api/auth/login/teacher", async (req, res) => {
         email: teacher.email,
         full_name: teacher.full_name || teacher.email,
         school_id: String(teacher.school_id),
+        role: teacher.role || "teacher",
       });
     }
     return res.status(401).json({ error: "Teacher not found" });
@@ -4065,6 +4078,118 @@ app.post("/api/storage/upload-server", async (req, res) => {
 });
 
 // ─── End Cloudflare R2 API ────────────────────────────────────────────────────
+
+
+// --- Principal Module: Teacher & Student Registration ---
+
+// Principal: Register Teacher
+app.post("/api/principals/teachers", async (req, res) => {
+  const { school_id, full_name, email, password, subjects } = req.body;
+  if (!school_id || !full_name || !email || !password) {
+    return res.status(400).json({ error: "Missing required fields: school_id, full_name, email, password" });
+  }
+  const db = getPool();
+  try {
+    const [result] = await db.query(
+      "INSERT INTO teachers (school_id, full_name, email, password, role) VALUES (?, ?, ?, ?, 'teacher')",
+      [Number(school_id), full_name, email, password]
+    );
+    const teacherId = result.insertId;
+    if (subjects && Array.isArray(subjects)) {
+      for (const subjectId of subjects) {
+        await db.query("INSERT INTO teacher_subjects (teacher_id, subject_id) VALUES (?, ?)", [teacherId, Number(subjectId)]);
+      }
+    }
+    res.status(201).json({ ok: true, teacher_id: String(teacherId) });
+  } catch (err) {
+    console.error("Teacher registration error:", err);
+    res.status(500).json({ error: "Failed to register teacher" });
+  }
+});
+
+// Principal: Register Student
+app.post("/api/principals/students", async (req, res) => {
+  const { school_id, section_id, first_name, last_name, category, joined_at } = req.body;
+  if (!school_id || !section_id || !first_name || !last_name) {
+    return res.status(400).json({ error: "Missing required fields: school_id, section_id, first_name, last_name" });
+  }
+  const db = getPool();
+  try {
+    const [result] = await db.query(
+      "INSERT INTO students (school_id, section_id, first_name, last_name, category, joined_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [
+        Number(school_id), 
+        Number(section_id), 
+        first_name, 
+        last_name, 
+        category || 'General', 
+        joined_at || new Date().toISOString().slice(0, 10)
+      ]
+    );
+    const studentId = result.insertId;
+    // Generate QR codes immediately
+    await generateStudentQRCodes(db, studentId);
+    res.status(201).json({ ok: true, student_id: String(studentId) });
+  } catch (err) {
+    console.error("Student registration error:", err);
+    res.status(500).json({ error: "Failed to register student" });
+  }
+});
+
+// Principal: Get School Students with QR details
+app.get("/api/principals/schools/:schoolId/students", async (req, res) => {
+  const schoolId = Number(req.params.schoolId);
+  if (!schoolId) return res.status(400).json({ error: "school id required" });
+  const db = getPool();
+  try {
+    const [rows] = await db.query(`
+      SELECT s.*, sec.grade_id, sec.section_code,
+             GROUP_CONCAT(CONCAT(sq.qr_type, ':', sq.qr_image_path) SEPARATOR '|') as qr_codes_raw
+      FROM students s
+      JOIN sections sec ON sec.id = s.section_id
+      LEFT JOIN student_qr_codes sq ON sq.student_id = s.id
+      WHERE s.school_id = ?
+      GROUP BY s.id
+      ORDER BY s.id DESC
+    `, [schoolId]);
+    
+    const students = rows.map(r => {
+      const qrs = (r.qr_codes_raw || "").split('|').filter(Boolean).map(qc => {
+        const [type, path] = qc.split(':');
+        return { type, path: path && path !== 'null' ? "/uploads/" + path.replace(/\\/g, "/") : null };
+      });
+      const { qr_codes_raw, ...rest } = r;
+      return { ...rest, qr_codes: qrs };
+    });
+    
+    res.json(students);
+  } catch (err) {
+    console.error("GET /api/principals/students error:", err);
+    res.status(500).json({ error: "Failed to fetch students" });
+  }
+});
+
+// Principal: Get School Teachers
+app.get("/api/principals/schools/:schoolId/teachers", async (req, res) => {
+  const schoolId = Number(req.params.schoolId);
+  if (!schoolId) return res.status(400).json({ error: "school id required" });
+  const db = getPool();
+  try {
+    const [rows] = await db.query(`
+      SELECT t.id, t.full_name, t.email, t.role,
+             GROUP_CONCAT(ts.subject_id SEPARATOR ',') as subject_ids
+      FROM teachers t
+      LEFT JOIN teacher_subjects ts ON ts.teacher_id = t.id
+      WHERE t.school_id = ?
+      GROUP BY t.id
+      ORDER BY t.id DESC
+    `, [schoolId]);
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/principals/teachers error:", err);
+    res.status(500).json({ error: "Failed to fetch teachers" });
+  }
+});
 
 // Unknown /api routes → JSON 404
 app.use("/api", (req, res, next) => {
