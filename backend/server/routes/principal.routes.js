@@ -4,7 +4,12 @@ import {
   registerTeacherByPrincipal, 
   registerStudentByPrincipal,
   getSchoolStudents,
-  getSchoolTeachers
+  getSchoolTeachers,
+  getGrades,
+  getSchoolSections,
+  createSection,
+  updateSection,
+  deleteSection
 } from "../controllers/principal.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -20,4 +25,12 @@ router.post("/students", registerStudentByPrincipal);
 router.get("/schools/:schoolId/students", getSchoolStudents);
 router.get("/schools/:schoolId/teachers", getSchoolTeachers);
 
+// Grades & Sections (Classes) management
+router.get("/grades", getGrades);
+router.get("/sections", getSchoolSections);
+router.post("/sections", createSection);
+router.put("/sections/:id", updateSection);
+router.delete("/sections/:id", deleteSection);
+
 export default router;
+
