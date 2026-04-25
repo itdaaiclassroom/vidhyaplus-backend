@@ -13,6 +13,13 @@ import archiver from "archiver";
 import JSZip from "jszip";
 import { toId, isConnectionError } from "./utils.js";
 import * as assetStorage from "./storage.js";
+import getPool from "./config/db.js";
+import authRoutes from "./routes/auth.routes.js";
+import teacherRoutes from "./routes/teacher.routes.js";
+import studentRoutes from "./routes/student.routes.js";
+import principalRoutes from "./routes/principal.routes.js";
+import schoolRoutes from "./routes/school.routes.js";
+import adminManagementRoutes from "./routes/admin.routes.js";
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
@@ -30,6 +37,14 @@ const uploadsDir = process.env.UPLOADS_DIR
   : path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 app.use("/uploads", express.static(uploadsDir));
+
+// Modular Routes
+app.use("/api", authRoutes); // authRoutes includes /principal/login, etc.
+app.use("/api/teachers", teacherRoutes);
+app.use("/api/students", studentRoutes);
+app.use("/api/principal", principalRoutes);
+app.use("/api/schools", schoolRoutes);
+app.use("/api/admin", adminManagementRoutes);
 const qrcodesDir = path.join(uploadsDir, "qrcodes");
 const textbookDir = path.join(uploadsDir, "textbook");
 const pptDir = path.join(uploadsDir, "ppt");
@@ -230,74 +245,8 @@ async function verifyPassword(candidate, storedHashOrPlain) {
   return cand === stored;
 }
 
-/**
- * Middleware to authorize Principal actions.
- * Checks for x-principal-id and x-school-id in headers.
- */
-async function authorizePrincipal(req, res, next) {
-  const principalId = req.headers["x-principal-id"];
-  const schoolId = req.headers["x-school-id"] || req.params.schoolId || req.body.school_id;
-
-  if (!principalId || !schoolId) {
-    // For now, if we are in demo mode or it's a test, we might want to skip or just warn
-    // But let's enforce it for "correctness"
-    return res.status(401).json({ error: "Unauthorized: Principal ID and School ID required in headers" });
-  }
-
-  try {
-    const db = getPool();
-    const [rows] = await db.query(
-      "SELECT id FROM teachers WHERE id = ? AND school_id = ? AND role = 'principal' LIMIT 1",
-      [Number(principalId), Number(schoolId)]
-    );
-    if (!rows || rows.length === 0) {
-      return res.status(403).json({ error: "Forbidden: Not an authorized Principal for this school" });
-    }
-    next();
-  } catch (err) {
-    console.error("Authorization check failed:", err);
-    res.status(500).json({ error: "Authorization check failed" });
-  }
-}
 
 
-async function generateStudentQRCodes(db, studentId) {
-  const sid = Number(studentId);
-  if (!sid) return [];
-    const [studentRows] = await db.query("SELECT roll_no, category FROM students WHERE id = ? LIMIT 1", [sid]);
-    const student = studentRows && studentRows[0] ? studentRows[0] : null;
-    const rollNo = student ? String(student.roll_no || sid) : String(sid);
-    const category = student ? String(student.category || "General") : "General";
-    
-    const created = [];
-    for (const qrType of QR_TYPES) {
-      const token = `stu${rollNo}_${qrType}`;
-      const webOrigin = getEnvPublicWebOrigin() || APP_BASE_URL;
-      
-      // Requirement #4: QR Code should contain Student ID and Assigned Option (category)
-      let qrCodeValue;
-      if (qrType === "DATA") {
-        qrCodeValue = `${webOrigin}/student/qr/${encodeURIComponent(token)}?id=${rollNo}&option=${encodeURIComponent(category)}`;
-      } else {
-        qrCodeValue = token;
-      }
-      
-      const filename = `${rollNo}_${qrType}.png`;
-    const relativePath = "qrcodes/" + filename;
-    try {
-      const pngBuf = await QRCode.toBuffer(qrCodeValue, { type: "png", margin: 1 });
-      await assetStorage.saveUploadBuffer(relativePath, pngBuf, "image/png");
-      await db.query(
-        "INSERT INTO student_qr_codes (student_id, qr_type, qr_code_value, qr_image_path) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE qr_code_value = VALUES(qr_code_value), qr_image_path = VALUES(qr_image_path)",
-        [sid, qrType, token, relativePath]
-      );
-      created.push({ qr_type: qrType, qr_code_value: token, qr_image_path: "/uploads/" + relativePath.replace(/\\/g, "/"), qr_payload: qrCodeValue });
-    } catch (err) {
-      console.error("QR generation error for", qrCodeValue, err.message);
-    }
-  }
-  return created;
-}
 
 let pool;
 const liveQuizRuntime = new Map();
@@ -426,40 +375,6 @@ function getPublicApiBase(req) {
   return `http://localhost:${PORT}`;
 }
 
-function getPool() {
-  if (!pool) {
-    const url = process.env.MYSQL_URL || process.env.DATABASE_URL;
-    if (url) {
-      pool = mysql.createPool({ uri: url, connectTimeout: 15000 });
-    } else {
-      const host = process.env.MYSQL_HOST || "localhost";
-      const port = process.env.MYSQL_PORT ? Number(process.env.MYSQL_PORT) : 3306;
-      const user = process.env.MYSQL_USER || "root";
-      const password = process.env.MYSQL_PASSWORD || "";
-      const database = process.env.MYSQL_DATABASE || "lms";
-      const useSsl =
-        process.env.MYSQL_SSL === "1" ||
-        process.env.MYSQL_SSL === "true" ||
-        /rds\.amazonaws\.com/i.test(host);
-      const sslConfig =
-        useSsl && process.env.MYSQL_SSL_REJECT_UNAUTHORIZED === "0"
-          ? { rejectUnauthorized: false }
-          : useSsl
-            ? {}
-            : undefined;
-      pool = mysql.createPool({
-        host,
-        port,
-        user,
-        password,
-        database,
-        connectTimeout: 15000,
-        ...(sslConfig !== undefined ? { ssl: sslConfig } : {}),
-      });
-    }
-  }
-  return pool;
-}
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true });
@@ -555,124 +470,6 @@ app.get("/api/preflight", async (req, res) => {
   return res.status(ok ? 200 : 503).json({ ok, report });
 });
 
-app.post("/api/auth/login", async (req, res) => {
-  const emailTrim = req.body?.email != null ? String(req.body.email).trim() : "";
-  const { password } = req.body || {};
-  if (!emailTrim) {
-    return res.status(400).json({ error: "email is required" });
-  }
-  if (!password || String(password).trim() === "") {
-    return res.status(400).json({ error: "password is required" });
-  }
-
-  // Static admins: strict password check
-  const staticAdmin = STATIC_ADMINS.find((a) => a.email.toLowerCase() === emailTrim.toLowerCase());
-  if (staticAdmin) {
-    if (String(password).trim() !== "passadmin123") {
-      return res.status(401).json({ error: "Invalid admin credentials" });
-    }
-    return res.json({
-      id: "admin-" + staticAdmin.email.replace(/@.*/, ""),
-      email: staticAdmin.email,
-      full_name: staticAdmin.full_name || staticAdmin.email,
-      role: "admin",
-    });
-  }
-
-  // DB-backed admins only
-  try {
-    const db = getPool();
-    const [rows] = await db.query(
-      "SELECT id, email, name, role, password FROM admins WHERE email = ? LIMIT 1",
-      [emailTrim]
-    );
-    const admin = Array.isArray(rows) && rows[0] ? rows[0] : null;
-    if (admin) {
-      const ok = await verifyPassword(password, admin.password);
-      if (!ok) return res.status(401).json({ error: "Invalid admin credentials" });
-      return res.json({
-        id: String(admin.id),
-        email: admin.email,
-        full_name: admin.name || admin.email,
-        role: admin.role || "admin",
-      });
-    }
-    return res.status(401).json({ error: "Admin not found" });
-  } catch (err) {
-    console.error("POST /api/auth/login error:", err);
-    return res.status(500).json({ error: "Admin login failed" });
-  }
-});
-
-app.post("/api/auth/login/teacher", async (req, res) => {
-  const emailTrim = req.body?.email != null ? String(req.body.email).trim() : "";
-  const { password } = req.body || {};
-  if (!emailTrim) {
-    return res.status(400).json({ error: "Email is required" });
-  }
-  if (!password || String(password).trim() === "") {
-    return res.status(400).json({ error: "password is required" });
-  }
-  try {
-    const db = getPool();
-    const [rows] = await db.query(
-      "SELECT id, email, full_name, school_id, role, password FROM teachers WHERE email = ? LIMIT 1",
-      [emailTrim]
-    );
-    const teacher = Array.isArray(rows) && rows[0] ? rows[0] : null;
-    if (teacher) {
-      const ok = await verifyPassword(password, teacher.password);
-      if (!ok) return res.status(401).json({ error: "Invalid teacher credentials" });
-      return res.json({
-        id: String(teacher.id),
-        email: teacher.email,
-        full_name: teacher.full_name || teacher.email,
-        school_id: String(teacher.school_id),
-        role: teacher.role || "teacher",
-      });
-    }
-    return res.status(401).json({ error: "Teacher not found" });
-  } catch (err) {
-    console.error("POST /api/auth/login/teacher error:", err);
-    return res.status(500).json({ error: "Teacher login failed" });
-  }
-});
-
-app.post("/api/auth/login/student", async (req, res) => {
-  const sid = req.body?.student_id != null ? String(req.body.student_id).trim() : "";
-  const { password } = req.body || {};
-  if (!sid) {
-    return res.status(400).json({ error: "Student ID is required" });
-  }
-  if (!password || String(password).trim() === "") {
-    return res.status(400).json({ error: "password is required" });
-  }
-  const numericId = parseInt(sid, 10);
-  if (Number.isNaN(numericId) || numericId < 1) {
-    return res.status(400).json({ error: "Student ID must be a positive number" });
-  }
-  try {
-    const db = getPool();
-    const [rows] = await db.query(
-      "SELECT id, first_name, last_name, school_id, password FROM students WHERE id = ? OR roll_no = ? LIMIT 1",
-      [numericId, sid]
-    );
-    const student = Array.isArray(rows) && rows[0] ? rows[0] : null;
-    if (student) {
-      const ok = await verifyPassword(password, student.password);
-      if (!ok) return res.status(401).json({ error: "Invalid student credentials" });
-      return res.json({
-        id: String(student.id),
-        full_name: [student.first_name, student.last_name].filter(Boolean).join(" ").trim() || "Student",
-        school_id: String(student.school_id),
-      });
-    }
-    return res.status(401).json({ error: "Student not found" });
-  } catch (err) {
-    console.error("POST /api/auth/login/student error:", err);
-    return res.status(500).json({ error: "Student login failed" });
-  }
-});
 
 function runQuery(db, sql, params = []) {
   return (params.length ? db.query(sql, params) : db.query(sql))
@@ -969,11 +766,20 @@ app.get("/api/all", async (req, res) => {
       return {
         id,
         name: [s.first_name, s.last_name].filter(Boolean).join(" ").trim() || `Student ${id}`,
-        rollNo: Number(s.roll_no) || Number(id),
+        rollNo: s.roll_no || id,
         section: classesRows.find((c) => toId(c.id) === toId(s.section_id))?.section || "",
         classId: enrollmentByStudent[s.id] || null,
         schoolId: toId(s.school_id),
         score: agg && agg.n > 0 ? Math.round(agg.sum / agg.n) : 0,
+        profile_image_url: s.profile_image_path ? assetStorage.getPublicUrl(s.profile_image_path) : null,
+        village: s.village || "",
+        mandal: s.mandal || "",
+        district: s.district || "",
+        state: s.state || "Andhra Pradesh",
+        pincode: s.pincode || "",
+        address: s.address || "",
+        is_hosteller: Boolean(s.is_hosteller),
+        phone_number: s.phone_number || "",
       };
     });
 
@@ -1409,119 +1215,6 @@ app.get("/api/all", async (req, res) => {
   }
 });
 
-app.post("/api/students", async (req, res) => {
-  const db = getPool();
-  const { full_name, first_name, last_name, section, school_id, section_id, grade_id, joined_at, password } = req.body || {};
-  if (!school_id) {
-    return res.status(400).json({ error: "school_id is required" });
-  }
-  if (!password || String(password).trim() === "") {
-    return res.status(400).json({ error: "password is required for student login" });
-  }
-  const passwordPlain = String(password).trim();
-  try {
-    const schoolIdNum = Number(school_id);
-    if (!schoolIdNum) return res.status(400).json({ error: "valid school_id required" });
-    let resolvedSectionId = section_id != null ? Number(section_id) : null;
-    if (!resolvedSectionId) {
-      const sectionCode = section ? String(section).trim().toUpperCase() : "A";
-      const gradeIdNum = grade_id != null ? Number(grade_id) : 10;
-      const [secRows] = await db.query(
-        "SELECT id FROM sections WHERE school_id = ? AND grade_id = ? AND section_code = ? LIMIT 1",
-        [schoolIdNum, gradeIdNum, sectionCode]
-      );
-      if (Array.isArray(secRows) && secRows[0]) {
-        resolvedSectionId = Number(secRows[0].id);
-      } else {
-        const [insSec] = await db.query(
-          "INSERT INTO sections (school_id, grade_id, section_code) VALUES (?, ?, ?)",
-          [schoolIdNum, gradeIdNum, sectionCode]
-        );
-        resolvedSectionId = Number(insSec.insertId);
-      }
-    }
-    const fullName = String(full_name || "").trim();
-    const firstNameResolved = String(first_name || (fullName.split(" ")[0] || "Student")).trim();
-    const lastNameResolved = String(last_name || fullName.split(" ").slice(1).join(" ") || "Demo").trim();
-    const [insertResult] = await db.query(
-      "INSERT INTO students (school_id, section_id, first_name, last_name, password, joined_at) VALUES (?, ?, ?, ?, ?, ?)",
-      [schoolIdNum, resolvedSectionId, firstNameResolved, lastNameResolved, passwordPlain, joined_at ? String(joined_at).slice(0, 10) : new Date().toISOString().slice(0, 10)]
-    );
-    const studentId = insertResult.insertId;
-    try {
-      await generateStudentQRCodes(db, studentId);
-    } catch (qrErr) {
-      console.error("QR code generation failed for student", studentId, qrErr.message);
-    }
-    res.status(201).json({ id: String(studentId), full_name: `${firstNameResolved} ${lastNameResolved}`.trim(), school_id: String(schoolIdNum), section_id: String(resolvedSectionId) });
-  } catch (err) {
-    console.error("POST /api/students error:", err);
-    res.status(500).json({ error: String(err.message) });
-  }
-});
-
-app.post("/api/teachers", async (req, res) => {
-  const db = getPool();
-  const { full_name, email, school_id, password } = req.body || {};
-  if (!full_name || !school_id || !email) {
-    return res.status(400).json({ error: "full_name, email and school_id are required" });
-  }
-  if (!password || String(password).trim() === "") {
-    return res.status(400).json({ error: "password is required for teacher login" });
-  }
-  const emailVal = String(email).trim();
-  const passwordPlain = String(password).trim();
-  try {
-    const [insertResult] = await db.query(
-      "INSERT INTO teachers (full_name, email, school_id, password) VALUES (?, ?, ?, ?)",
-      [String(full_name).trim(), emailVal, Number(school_id), passwordPlain]
-    );
-    const teacherId = insertResult.insertId;
-    res.status(201).json({ id: String(teacherId), full_name: String(full_name).trim(), email: emailVal, school_id: String(school_id) });
-  } catch (err) {
-    console.error("POST /api/teachers error:", err);
-    res.status(500).json({ error: String(err.message) });
-  }
-});
-
-app.put("/api/teachers/:id", async (req, res) => {
-  const db = getPool();
-  const id = Number(req.params.id);
-  const { full_name, email, school_id, password } = req.body || {};
-  if (!id) return res.status(400).json({ error: "id required" });
-  try {
-    const updates = [];
-    const values = [];
-    if (full_name !== undefined) { updates.push("full_name = ?"); values.push(String(full_name).trim()); }
-    if (email !== undefined) { updates.push("email = ?"); values.push(String(email).trim()); }
-    if (school_id !== undefined) { updates.push("school_id = ?"); values.push(Number(school_id)); }
-    if (password !== undefined) {
-      const plain = password && String(password).trim() ? String(password).trim() : null;
-      updates.push("password = ?");
-      values.push(plain);
-    }
-    if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
-    values.push(id);
-    await db.query(`UPDATE teachers SET ${updates.join(", ")} WHERE id = ?`, values);
-    res.json({ id: String(id), updated: true });
-  } catch (err) {
-    console.error("PUT /api/teachers error:", err);
-    res.status(500).json({ error: String(err.message) });
-  }
-});
-
-app.delete("/api/teachers/:id", async (req, res) => {
-  const db = getPool();
-  const id = Number(req.params.id);
-  if (!id) return res.status(400).json({ error: "id required" });
-  try {
-    const [r] = await db.query("DELETE FROM teachers WHERE id = ?", [id]);
-    res.json({ deleted: r.affectedRows > 0 });
-  } catch (err) {
-    console.error("DELETE /api/teachers error:", err);
-    res.status(500).json({ error: String(err.message) });
-  }
-});
 
 app.get("/api/teachers/:id/assignments", async (req, res) => {
   const db = getPool();
@@ -1583,141 +1276,6 @@ app.put("/api/teachers/:id/assignments", async (req, res) => {
   }
 });
 
-app.put("/api/students/:id", async (req, res) => {
-  const db = getPool();
-  const id = Number(req.params.id);
-  const { full_name, roll_no, section, school_id, password } = req.body || {};
-  if (!id) return res.status(400).json({ error: "id required" });
-  try {
-    const updates = [];
-    const values = [];
-    if (full_name !== undefined) {
-      const fn = String(full_name).trim();
-      const first = fn.split(" ")[0] || "";
-      const last = fn.split(" ").slice(1).join(" ") || "";
-      updates.push("first_name = ?");
-      values.push(first);
-      updates.push("last_name = ?");
-      values.push(last);
-    }
-    if (roll_no !== undefined) { updates.push("roll_no = ?"); values.push(Number(roll_no)); }
-    if (section !== undefined && school_id !== undefined) {
-      const sec = section ? String(section).trim().toUpperCase() : "A";
-      const [secRows] = await db.query(
-        "SELECT id FROM sections WHERE school_id = ? AND grade_id = 10 AND section_code = ? LIMIT 1",
-        [Number(school_id), sec]
-      );
-      if (Array.isArray(secRows) && secRows[0]) {
-        updates.push("section_id = ?");
-        values.push(Number(secRows[0].id));
-      }
-    }
-    if (school_id !== undefined) { updates.push("school_id = ?"); values.push(Number(school_id)); }
-    if (password !== undefined) {
-      const plain = password && String(password).trim() ? String(password).trim() : null;
-      updates.push("password = ?");
-      values.push(plain);
-    }
-    if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
-    values.push(id);
-    await db.query(`UPDATE students SET ${updates.join(", ")} WHERE id = ?`, values);
-    res.json({ id: String(id), updated: true });
-  } catch (err) {
-    console.error("PUT /api/students error:", err);
-    res.status(500).json({ error: String(err.message) });
-  }
-});
-
-app.delete("/api/students/:id", async (req, res) => {
-  const db = getPool();
-  const id = Number(req.params.id);
-  if (!id) return res.status(400).json({ error: "id required" });
-  try {
-    const [r2] = await db.query("DELETE FROM students WHERE id = ?", [id]);
-    res.json({ deleted: r2.affectedRows > 0 });
-  } catch (err) {
-    console.error("DELETE /api/students error:", err);
-    res.status(500).json({ error: String(err.message) });
-  }
-});
-
-app.get("/api/admin/student/:id/qrcodes", async (req, res) => {
-  const db = getPool();
-  const id = Number(req.params.id);
-  if (!id) return res.status(400).json({ error: "id required" });
-  try {
-    const [rows] = await db.query(
-      "SELECT id, student_id, qr_type, qr_code_value, qr_image_path, created_at FROM student_qr_codes WHERE student_id = ? ORDER BY qr_type",
-      [id]
-    );
-    const list = (rows || []).map((r) => ({
-      id: toId(r.id),
-      studentId: toId(r.student_id),
-      qrType: r.qr_type,
-      qrCodeValue: r.qr_code_value,
-      qrImagePath: r.qr_image_path ? (r.qr_image_path.startsWith("/") ? r.qr_image_path : "/uploads/" + r.qr_image_path.replace(/\\/g, "/")) : null,
-      createdAt: r.created_at ? String(r.created_at) : null,
-    }));
-    res.json({ qrcodes: list });
-  } catch (err) {
-    console.error("GET /api/admin/student/:id/qrcodes error:", err);
-    res.status(500).json({ error: String(err.message) });
-  }
-});
-
-app.get("/api/admin/student/:id/qrcodes/download", async (req, res) => {
-  const db = getPool();
-  const id = Number(req.params.id);
-  if (!id) return res.status(400).json({ error: "id required" });
-  try {
-    const [rows] = await db.query(
-      "SELECT qr_type, qr_image_path FROM student_qr_codes WHERE student_id = ? ORDER BY qr_type",
-      [id]
-    );
-    if (!rows || rows.length === 0) {
-      return res.status(404).json({ error: "No QR codes found for this student" });
-    }
-    res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", `attachment; filename="student_${id}_qrcodes.zip"`);
-    const archive = archiver("zip", { zlib: { level: 9 } });
-    archive.on("error", (err) => {
-      console.error("ZIP archive error:", err);
-      if (!res.headersSent) res.status(500).json({ error: "Failed to create ZIP" });
-    });
-    archive.pipe(res);
-    for (const row of rows) {
-      const storedPath = row.qr_image_path ? String(row.qr_image_path).replace(/^\/?uploads\/?/, "") : "";
-      const name = `student_${id}_${row.qr_type}.png`;
-      if (!storedPath) continue;
-      const got = await assetStorage.getUploadReadableStream(storedPath);
-      if (got?.stream) {
-        archive.append(got.stream, { name });
-      }
-    }
-    await archive.finalize();
-  } catch (err) {
-    console.error("GET /api/admin/student/:id/qrcodes/download error:", err);
-    if (!res.headersSent) res.status(500).json({ error: String(err.message) });
-  }
-});
-
-// Generate QR image files for all students already present in DB (useful after SQL seed import).
-app.post("/api/admin/qrcodes/generate-all-students", async (req, res) => {
-  const db = getPool();
-  try {
-    const [rows] = await db.query("SELECT id FROM students ORDER BY id");
-    const studentIds = Array.isArray(rows) ? rows.map((r) => Number(r.id)).filter(Boolean) : [];
-    let generatedFor = 0;
-    for (const sid of studentIds) {
-      await generateStudentQRCodes(db, sid);
-      generatedFor += 1;
-    }
-    res.json({ ok: true, studentsProcessed: generatedFor });
-  } catch (err) {
-    console.error("POST /api/admin/qrcodes/generate-all-students error:", err);
-    res.status(500).json({ error: String(err.message) });
-  }
-});
 
 app.get("/api/student-qr/:token", async (req, res) => {
   const db = getPool();
@@ -1768,96 +1326,6 @@ app.get("/api/student-qr/:token", async (req, res) => {
   }
 });
 
-app.post("/api/schools", async (req, res) => {
-  const db = getPool();
-  const { name, code, district, mandal, sessions_completed, active_status, principalName, principalEmail, principalPassword } = req.body || {};
-  
-  if (!name || !code || !district) {
-    return res.status(400).json({ error: "name, code and district are required" });
-  }
-
-  try {
-    // 1. Create School
-    const [insertResult] = await db.query(
-      "INSERT INTO schools (school_name, school_code, district, mandal, sessions_completed, active_status) VALUES (?, ?, ?, ?, ?, ?)",
-      [
-        String(name).trim(),
-        String(code).trim(),
-        String(district).trim(),
-        mandal != null ? String(mandal).trim() : null,
-        sessions_completed != null ? Number(sessions_completed) : 0,
-        active_status !== false ? 1 : 0,
-      ]
-    );
-    const schoolId = insertResult.insertId;
-
-    let principalId = null;
-    // 2. Optional: Create Principal
-    if (principalName && principalEmail && principalPassword) {
-      const hashedPassword = await bcrypt.hash(String(principalPassword).trim(), 10);
-      const [principalResult] = await db.query(
-        "INSERT INTO teachers (full_name, email, password, role, school_id) VALUES (?, ?, ?, 'principal', ?)",
-        [
-          String(principalName).trim(),
-          String(principalEmail).trim(),
-          hashedPassword,
-          schoolId
-        ]
-      );
-      principalId = principalResult.insertId;
-    }
-
-    res.status(201).json({ 
-      id: String(schoolId), 
-      name: String(name).trim(), 
-      code: String(code).trim(), 
-      district: String(district).trim(), 
-      mandal: mandal != null ? String(mandal).trim() : null,
-      principal_id: principalId ? String(principalId) : null
-    });
-  } catch (err) {
-    console.error("POST /api/schools error:", err);
-    res.status(500).json({ error: String(err.message) });
-  }
-});
-
-
-app.put("/api/schools/:id", async (req, res) => {
-  const db = getPool();
-  const id = Number(req.params.id);
-  const { name, code, district, mandal, sessions_completed, active_status } = req.body || {};
-  if (!id) return res.status(400).json({ error: "id required" });
-  try {
-    const updates = [];
-    const values = [];
-    if (name !== undefined) { updates.push("school_name = ?"); values.push(String(name).trim()); }
-    if (code !== undefined) { updates.push("school_code = ?"); values.push(String(code).trim()); }
-    if (district !== undefined) { updates.push("district = ?"); values.push(String(district).trim()); }
-    if (mandal !== undefined) { updates.push("mandal = ?"); values.push(mandal != null ? String(mandal).trim() : null); }
-    if (sessions_completed !== undefined) { updates.push("sessions_completed = ?"); values.push(Number(sessions_completed)); }
-    if (active_status !== undefined) { updates.push("active_status = ?"); values.push(active_status ? 1 : 0); }
-    if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
-    values.push(id);
-    await db.query(`UPDATE schools SET ${updates.join(", ")} WHERE id = ?`, values);
-    res.json({ id: String(id), updated: true });
-  } catch (err) {
-    console.error("PUT /api/schools error:", err);
-    res.status(500).json({ error: String(err.message) });
-  }
-});
-
-app.delete("/api/schools/:id", async (req, res) => {
-  const db = getPool();
-  const id = Number(req.params.id);
-  if (!id) return res.status(400).json({ error: "id required" });
-  try {
-    const [r] = await db.query("DELETE FROM schools WHERE id = ?", [id]);
-    res.json({ deleted: r.affectedRows > 0 });
-  } catch (err) {
-    console.error("DELETE /api/schools error:", err);
-    res.status(500).json({ error: String(err.message) });
-  }
-});
 
 
 // ─── FIXES APPLIED ───────────────────────────────────────────────────────────
@@ -4139,116 +3607,6 @@ app.post("/api/storage/upload-server", async (req, res) => {
 // ─── End Cloudflare R2 API ────────────────────────────────────────────────────
 
 
-// --- Principal Module: Teacher & Student Registration ---
-
-// Principal: Register Teacher
-app.post("/api/principals/teachers", authorizePrincipal, async (req, res) => {
-  const { school_id, full_name, email, password, subjects } = req.body;
-  if (!school_id || !full_name || !email || !password) {
-    return res.status(400).json({ error: "Missing required fields: school_id, full_name, email, password" });
-  }
-  const db = getPool();
-  try {
-    const [result] = await db.query(
-      "INSERT INTO teachers (school_id, full_name, email, password, role) VALUES (?, ?, ?, ?, 'teacher')",
-      [Number(school_id), full_name, email, password]
-    );
-    const teacherId = result.insertId;
-    if (subjects && Array.isArray(subjects)) {
-      for (const subjectId of subjects) {
-        await db.query("INSERT INTO teacher_subjects (teacher_id, subject_id) VALUES (?, ?)", [teacherId, Number(subjectId)]);
-      }
-    }
-    res.status(201).json({ ok: true, teacher_id: String(teacherId) });
-  } catch (err) {
-    console.error("Teacher registration error:", err);
-    res.status(500).json({ error: "Failed to register teacher" });
-  }
-});
-
-// Principal: Register Student
-app.post("/api/principals/students", authorizePrincipal, async (req, res) => {
-  const { school_id, section_id, first_name, last_name, category, joined_at } = req.body;
-  if (!school_id || !section_id || !first_name || !last_name) {
-    return res.status(400).json({ error: "Missing required fields: school_id, section_id, first_name, last_name" });
-  }
-  const db = getPool();
-  try {
-    const [result] = await db.query(
-      "INSERT INTO students (school_id, section_id, first_name, last_name, category, joined_at) VALUES (?, ?, ?, ?, ?, ?)",
-      [
-        Number(school_id), 
-        Number(section_id), 
-        first_name, 
-        last_name, 
-        category || 'General', 
-        joined_at || new Date().toISOString().slice(0, 10)
-      ]
-    );
-    const studentId = result.insertId;
-    // Generate QR codes immediately
-    await generateStudentQRCodes(db, studentId);
-    res.status(201).json({ ok: true, student_id: String(studentId) });
-  } catch (err) {
-    console.error("Student registration error:", err);
-    res.status(500).json({ error: "Failed to register student" });
-  }
-});
-
-// Principal: Get School Students with QR details
-app.get("/api/principals/schools/:schoolId/students", authorizePrincipal, async (req, res) => {
-  const schoolId = Number(req.params.schoolId);
-  if (!schoolId) return res.status(400).json({ error: "school id required" });
-  const db = getPool();
-  try {
-    const [rows] = await db.query(`
-      SELECT s.*, sec.grade_id, sec.section_code,
-             GROUP_CONCAT(CONCAT(sq.qr_type, ':', sq.qr_image_path) SEPARATOR '|') as qr_codes_raw
-      FROM students s
-      JOIN sections sec ON sec.id = s.section_id
-      LEFT JOIN student_qr_codes sq ON sq.student_id = s.id
-      WHERE s.school_id = ?
-      GROUP BY s.id
-      ORDER BY s.id DESC
-    `, [schoolId]);
-    
-    const students = rows.map(r => {
-      const qrs = (r.qr_codes_raw || "").split('|').filter(Boolean).map(qc => {
-        const [type, path] = qc.split(':');
-        return { type, path: path && path !== 'null' ? "/uploads/" + path.replace(/\\/g, "/") : null };
-      });
-      const { qr_codes_raw, ...rest } = r;
-      return { ...rest, qr_codes: qrs };
-    });
-    
-    res.json(students);
-  } catch (err) {
-    console.error("GET /api/principals/students error:", err);
-    res.status(500).json({ error: "Failed to fetch students" });
-  }
-});
-
-// Principal: Get School Teachers
-app.get("/api/principals/schools/:schoolId/teachers", authorizePrincipal, async (req, res) => {
-  const schoolId = Number(req.params.schoolId);
-  if (!schoolId) return res.status(400).json({ error: "school id required" });
-  const db = getPool();
-  try {
-    const [rows] = await db.query(`
-      SELECT t.id, t.full_name, t.email, t.role,
-             GROUP_CONCAT(ts.subject_id SEPARATOR ',') as subject_ids
-      FROM teachers t
-      LEFT JOIN teacher_subjects ts ON ts.teacher_id = t.id
-      WHERE t.school_id = ?
-      GROUP BY t.id
-      ORDER BY t.id DESC
-    `, [schoolId]);
-    res.json(rows);
-  } catch (err) {
-    console.error("GET /api/principals/teachers error:", err);
-    res.status(500).json({ error: "Failed to fetch teachers" });
-  }
-});
 
 // Unknown /api routes → JSON 404
 app.use("/api", (req, res, next) => {
