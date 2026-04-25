@@ -230,6 +230,37 @@ async function verifyPassword(candidate, storedHashOrPlain) {
   return cand === stored;
 }
 
+/**
+ * Middleware to authorize Principal actions.
+ * Checks for x-principal-id and x-school-id in headers.
+ */
+async function authorizePrincipal(req, res, next) {
+  const principalId = req.headers["x-principal-id"];
+  const schoolId = req.headers["x-school-id"] || req.params.schoolId || req.body.school_id;
+
+  if (!principalId || !schoolId) {
+    // For now, if we are in demo mode or it's a test, we might want to skip or just warn
+    // But let's enforce it for "correctness"
+    return res.status(401).json({ error: "Unauthorized: Principal ID and School ID required in headers" });
+  }
+
+  try {
+    const db = getPool();
+    const [rows] = await db.query(
+      "SELECT id FROM teachers WHERE id = ? AND school_id = ? AND role = 'principal' LIMIT 1",
+      [Number(principalId), Number(schoolId)]
+    );
+    if (!rows || rows.length === 0) {
+      return res.status(403).json({ error: "Forbidden: Not an authorized Principal for this school" });
+    }
+    next();
+  } catch (err) {
+    console.error("Authorization check failed:", err);
+    res.status(500).json({ error: "Authorization check failed" });
+  }
+}
+
+
 async function generateStudentQRCodes(db, studentId) {
   const sid = Number(studentId);
   if (!sid) return [];
@@ -1739,11 +1770,14 @@ app.get("/api/student-qr/:token", async (req, res) => {
 
 app.post("/api/schools", async (req, res) => {
   const db = getPool();
-  const { name, code, district, mandal, sessions_completed, active_status } = req.body || {};
+  const { name, code, district, mandal, sessions_completed, active_status, principalName, principalEmail, principalPassword } = req.body || {};
+  
   if (!name || !code || !district) {
     return res.status(400).json({ error: "name, code and district are required" });
   }
+
   try {
+    // 1. Create School
     const [insertResult] = await db.query(
       "INSERT INTO schools (school_name, school_code, district, mandal, sessions_completed, active_status) VALUES (?, ?, ?, ?, ?, ?)",
       [
@@ -1755,13 +1789,38 @@ app.post("/api/schools", async (req, res) => {
         active_status !== false ? 1 : 0,
       ]
     );
-    const id = insertResult.insertId;
-    res.status(201).json({ id: String(id), name: String(name).trim(), code: String(code).trim(), district: String(district).trim(), mandal: mandal != null ? String(mandal).trim() : null });
+    const schoolId = insertResult.insertId;
+
+    let principalId = null;
+    // 2. Optional: Create Principal
+    if (principalName && principalEmail && principalPassword) {
+      const hashedPassword = await bcrypt.hash(String(principalPassword).trim(), 10);
+      const [principalResult] = await db.query(
+        "INSERT INTO teachers (full_name, email, password, role, school_id) VALUES (?, ?, ?, 'principal', ?)",
+        [
+          String(principalName).trim(),
+          String(principalEmail).trim(),
+          hashedPassword,
+          schoolId
+        ]
+      );
+      principalId = principalResult.insertId;
+    }
+
+    res.status(201).json({ 
+      id: String(schoolId), 
+      name: String(name).trim(), 
+      code: String(code).trim(), 
+      district: String(district).trim(), 
+      mandal: mandal != null ? String(mandal).trim() : null,
+      principal_id: principalId ? String(principalId) : null
+    });
   } catch (err) {
     console.error("POST /api/schools error:", err);
     res.status(500).json({ error: String(err.message) });
   }
 });
+
 
 app.put("/api/schools/:id", async (req, res) => {
   const db = getPool();
@@ -4083,7 +4142,7 @@ app.post("/api/storage/upload-server", async (req, res) => {
 // --- Principal Module: Teacher & Student Registration ---
 
 // Principal: Register Teacher
-app.post("/api/principals/teachers", async (req, res) => {
+app.post("/api/principals/teachers", authorizePrincipal, async (req, res) => {
   const { school_id, full_name, email, password, subjects } = req.body;
   if (!school_id || !full_name || !email || !password) {
     return res.status(400).json({ error: "Missing required fields: school_id, full_name, email, password" });
@@ -4108,7 +4167,7 @@ app.post("/api/principals/teachers", async (req, res) => {
 });
 
 // Principal: Register Student
-app.post("/api/principals/students", async (req, res) => {
+app.post("/api/principals/students", authorizePrincipal, async (req, res) => {
   const { school_id, section_id, first_name, last_name, category, joined_at } = req.body;
   if (!school_id || !section_id || !first_name || !last_name) {
     return res.status(400).json({ error: "Missing required fields: school_id, section_id, first_name, last_name" });
@@ -4137,7 +4196,7 @@ app.post("/api/principals/students", async (req, res) => {
 });
 
 // Principal: Get School Students with QR details
-app.get("/api/principals/schools/:schoolId/students", async (req, res) => {
+app.get("/api/principals/schools/:schoolId/students", authorizePrincipal, async (req, res) => {
   const schoolId = Number(req.params.schoolId);
   if (!schoolId) return res.status(400).json({ error: "school id required" });
   const db = getPool();
@@ -4170,7 +4229,7 @@ app.get("/api/principals/schools/:schoolId/students", async (req, res) => {
 });
 
 // Principal: Get School Teachers
-app.get("/api/principals/schools/:schoolId/teachers", async (req, res) => {
+app.get("/api/principals/schools/:schoolId/teachers", authorizePrincipal, async (req, res) => {
   const schoolId = Number(req.params.schoolId);
   if (!schoolId) return res.status(400).json({ error: "school id required" });
   const db = getPool();
