@@ -1,0 +1,3 @@
+Full Name,Email,Subjects,Password,Role,Gender,Date of Birth,Phone Number,Emergency Contact,Aadhaar Number,Caste,Religion,Nationality,Mother Tongue,Address,Village,Mandal,District,State,Pincode,Disabilities
+Sunil Reddy,sunil.reddy@example.com,"Math, Physics",teacher123,Teacher,Male,1985-06-15,9012345678,9123456789,987654321098,General,Hindu,Indian,Telugu,12 Tech Park,HiTech City,Mandal 1,Hyderabad,Telangana,500081,None
+Kavitha Rani,kavitha.rani@example.com,"English, Social Studies",teacher123,Teacher,Female,1990-03-10,9012345679,9123456780,987654321099,OBC,Hindu,Indian,Telugu,34 Green Ave,Gachibowli,Mandal 2,Hyderabad,Telangana,500032,None

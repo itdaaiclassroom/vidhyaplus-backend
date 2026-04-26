@@ -1,0 +1,4 @@
+First Name,Last Name,Grade,Section,Password,Gender,Date of Birth,Father Name,Mother Name,Phone,Aadhaar,Category,Address,Village,Mandal,District,State,Pincode,Hostel Status,Disabilities
+Rahul,Sharma,10,A,pass123,Male,2010-05-14,Ramesh Sharma,Sita Sharma,9876543210,123456789012,General,123 Main St,Rampur,Mandal 1,Hyderabad,Telangana,500001,No,None
+Priya,Patel,10,A,pass123,Female,2010-08-22,Vijay Patel,Geeta Patel,9876543211,123456789013,OBC,456 Park Ave,Sitapur,Mandal 2,Hyderabad,Telangana,500002,Yes,None
+Amit,Kumar,10,B,pass123,Male,2010-11-03,Suresh Kumar,Anita Kumar,9876543212,123456789014,SC,789 Lake Rd,Madhapur,Mandal 1,Hyderabad,Telangana,500081,No,None
