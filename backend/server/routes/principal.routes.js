@@ -10,7 +10,6 @@ import {
   createSection,
   updateSection,
   deleteSection
-  getSchoolTeachers
 } from "../controllers/principal.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -35,4 +34,4 @@ router.delete("/sections/:id", deleteSection);
 
 export default router;
 
-export default router;
+
