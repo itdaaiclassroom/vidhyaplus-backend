@@ -76,7 +76,7 @@ export async function bulkCreateTeachers(req, res) {
   };
 
   for (const teacher of teachers) {
-    const { full_name, email, school_id, password } = teacher || {};
+    const { full_name, email, school_id, password, subjects } = teacher || {};
     
     if (!full_name || !school_id || !email) {
       results.failed.push({ teacher, error: "full_name, email and school_id are required" });
@@ -92,12 +92,24 @@ export async function bulkCreateTeachers(req, res) {
 
     try {
       const [insertResult] = await db.query(
-        "INSERT INTO teachers (full_name, email, school_id, password) VALUES (?, ?, ?, ?)",
+        "INSERT INTO teachers (full_name, email, school_id, password, role) VALUES (?, ?, ?, ?, 'teacher')",
         [String(full_name).trim(), emailVal, Number(school_id), passwordPlain]
       );
       
+      const teacherId = insertResult.insertId;
+
+      // Handle subjects if provided
+      if (subjects && Array.isArray(subjects)) {
+        for (const subjectId of subjects) {
+          await db.query(
+            "INSERT INTO teacher_subjects (teacher_id, subject_id) VALUES (?, ?)",
+            [teacherId, Number(subjectId)]
+          );
+        }
+      }
+      
       results.successful.push({
-        id: String(insertResult.insertId), 
+        id: String(teacherId), 
         full_name: String(full_name).trim(), 
         email: emailVal, 
         school_id: String(school_id)
