@@ -50,6 +50,7 @@ export async function createStudent(req, res) {
     gender, dob, father_name, mother_name, phone, phone_number, aadhaar,
     address, village, mandal, district, state, pincode, hostel_status, is_hosteller, disabilities
   } = req.body || {};
+  const { full_name, first_name, last_name, section, school_id, section_id, grade_id, joined_at, password, category, profile_image_path } = req.body || {};
   
   if (!school_id) {
     return res.status(400).json({ error: "school_id is required" });
@@ -94,6 +95,8 @@ export async function createStudent(req, res) {
         school_id, section_id, first_name, last_name, password, joined_at, category, profile_image_path,
         gender, dob, father_name, mother_name, phone_number, aadhaar, address, village, mandal, district, state, pincode, is_hosteller, disabilities
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    const [insertResult] = await db.query(
+      "INSERT INTO students (school_id, section_id, first_name, last_name, password, joined_at, category, profile_image_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [
         schoolIdNum, 
         resolvedSectionId, 
@@ -117,6 +120,7 @@ export async function createStudent(req, res) {
         pincode || null,
         resolvedIsHosteller,
         disabilities || null
+        profile_image_path || null
       ]
     );
     
