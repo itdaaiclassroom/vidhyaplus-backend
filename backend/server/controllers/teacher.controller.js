@@ -78,8 +78,9 @@ export async function bulkCreateTeachers(req, res) {
   for (const teacher of teachers) {
     const { full_name, email, school_id, password, subjects } = teacher || {};
     
-    if (!full_name || !school_id || !email) {
-      results.failed.push({ teacher, error: "full_name, email and school_id are required" });
+    const parsedSchoolId = Number(school_id);
+    if (!full_name || !school_id || !email || isNaN(parsedSchoolId)) {
+      results.failed.push({ teacher, error: "valid full_name, email and school_id are required" });
       continue;
     }
     if (!password || String(password).trim() === "") {
@@ -93,7 +94,7 @@ export async function bulkCreateTeachers(req, res) {
     try {
       const [insertResult] = await db.query(
         "INSERT INTO teachers (full_name, email, school_id, password, role) VALUES (?, ?, ?, ?, 'teacher')",
-        [String(full_name).trim(), emailVal, Number(school_id), passwordPlain]
+        [String(full_name).trim(), emailVal, parsedSchoolId, passwordPlain]
       );
       
       const teacherId = insertResult.insertId;
@@ -115,7 +116,11 @@ export async function bulkCreateTeachers(req, res) {
         school_id: String(school_id)
       });
     } catch (err) {
-      results.failed.push({ teacher, error: err.message });
+      if (err.code === 'ER_DUP_ENTRY') {
+        results.failed.push({ teacher, error: `Email '${emailVal}' is already registered.` });
+      } else {
+        results.failed.push({ teacher, error: err.message });
+      }
     }
   }
 

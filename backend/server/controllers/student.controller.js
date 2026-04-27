@@ -45,7 +45,7 @@ export async function generateStudentQRIds(db, studentId) {
 export async function createStudent(req, res) {
   const db = getPool();
   const { 
-    full_name, first_name, last_name, section, school_id, section_id, grade_id, 
+    full_name, first_name, last_name, roll_no, section, school_id, section_id, grade_id, 
     joined_at, password, category, profile_image_path,
     gender, dob, father_name, mother_name, phone, phone_number, aadhaar,
     address, village, mandal, district, state, pincode, hostel_status, is_hosteller, disabilities
@@ -92,14 +92,15 @@ export async function createStudent(req, res) {
 
     const [insertResult] = await db.query(
       `INSERT INTO students (
-        school_id, section_id, first_name, last_name, password, joined_at, category, profile_image_path,
+        school_id, section_id, first_name, last_name, roll_no, password, joined_at, category, profile_image_path,
         gender, dob, father_name, mother_name, phone_number, aadhaar, address, village, mandal, district, state, pincode, is_hosteller, disabilities
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         schoolIdNum, 
         resolvedSectionId, 
         firstNameResolved, 
         lastNameResolved, 
+        roll_no || null,
         passwordPlain, 
         joined_at ? String(joined_at).slice(0, 10) : new Date().toISOString().slice(0, 10), 
         studentCategory,
@@ -147,53 +148,72 @@ export async function createStudent(req, res) {
 export async function updateStudent(req, res) {
   const db = getPool();
   const id = Number(req.params.id);
-  const { full_name, roll_no, section, school_id, password, category, profile_image_path } = req.body || {};
+  const { 
+    first_name, last_name, full_name, section_id, grade_id, school_id, 
+    password, category, profile_image_path, gender, dob, father_name, 
+    mother_name, phone, phone_number, aadhaar, address, village, mandal, 
+    district, state, pincode, is_hosteller, disabilities 
+  } = req.body || {};
+  
   if (!id) return res.status(400).json({ error: "id required" });
+  console.log(`UPDATING STUDENT ID: ${id}`, req.body);
   try {
+    // Verify student exists
+    const [existing] = await db.query("SELECT id FROM students WHERE id = ? LIMIT 1", [id]);
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ error: `Student with ID ${id} not found` });
+    }
+
     const updates = [];
     const values = [];
-    if (full_name !== undefined) {
-      const fn = String(full_name).trim();
-      const first = fn.split(" ")[0] || "";
-      const last = fn.split(" ").slice(1).join(" ") || "";
-      updates.push("first_name = ?");
-      values.push(first);
-      updates.push("last_name = ?");
-      values.push(last);
-    }
-    if (roll_no !== undefined) { updates.push("roll_no = ?"); values.push(Number(roll_no)); }
-    if (section !== undefined && school_id !== undefined) {
-      const sec = section ? String(section).trim().toUpperCase() : "A";
-      const [secRows] = await db.query(
-        "SELECT id FROM sections WHERE school_id = ? AND grade_id = 10 AND section_code = ? LIMIT 1",
-        [Number(school_id), sec]
-      );
-      if (Array.isArray(secRows) && secRows[0]) {
-        updates.push("section_id = ?");
-        values.push(Number(secRows[0].id));
-      }
-    }
-    if (school_id !== undefined) { updates.push("school_id = ?"); values.push(Number(school_id)); }
+    
+    if (first_name !== undefined) { updates.push("first_name = ?"); values.push(String(first_name).trim()); }
+    if (last_name !== undefined) { updates.push("last_name = ?"); values.push(String(last_name).trim()); }
+    
+    if (section_id !== undefined) { updates.push("section_id = ?"); values.push(Number(section_id)); }
     if (category !== undefined) { updates.push("category = ?"); values.push(category); }
-    if (password !== undefined) {
-      const plain = password && String(password).trim() ? String(password).trim() : null;
+    if (gender !== undefined) { updates.push("gender = ?"); values.push(gender); }
+    if (dob !== undefined) { updates.push("dob = ?"); values.push(dob); }
+    if (father_name !== undefined) { updates.push("father_name = ?"); values.push(father_name); }
+    if (mother_name !== undefined) { updates.push("mother_name = ?"); values.push(mother_name); }
+    
+    // Support both 'phone' and 'phone_number' from frontend
+    const resolvedPhone = phone !== undefined ? phone : phone_number;
+    if (resolvedPhone !== undefined) { updates.push("phone_number = ?"); values.push(resolvedPhone); }
+    
+    if (aadhaar !== undefined) { updates.push("aadhaar = ?"); values.push(aadhaar); }
+    if (address !== undefined) { updates.push("address = ?"); values.push(address); }
+    if (village !== undefined) { updates.push("village = ?"); values.push(village); }
+    if (mandal !== undefined) { updates.push("mandal = ?"); values.push(mandal); }
+    if (district !== undefined) { updates.push("district = ?"); values.push(district); }
+    if (state !== undefined) { updates.push("state = ?"); values.push(state); }
+    if (pincode !== undefined) { updates.push("pincode = ?"); values.push(pincode); }
+    if (is_hosteller !== undefined) { updates.push("is_hosteller = ?"); values.push((is_hosteller === 1 || is_hosteller === true) ? 1 : 0); }
+    if (disabilities !== undefined) { updates.push("disabilities = ?"); values.push(disabilities); }
+    
+    if (password !== undefined && password !== null && String(password).trim() !== "") {
       updates.push("password = ?");
-      values.push(plain);
+      values.push(String(password).trim());
     }
     if (profile_image_path !== undefined) {
       updates.push("profile_image_path = ?");
       values.push(profile_image_path || null);
     }
+
     if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
+    
     values.push(id);
-    await db.query(`UPDATE students SET ${updates.join(", ")} WHERE id = ?`, values);
+    const sql = `UPDATE students SET ${updates.join(", ")} WHERE id = ?`;
+    console.log("EXECUTING SQL:", sql, values);
+    const [result] = await db.query(sql, values);
+    console.log("SQL RESULT:", result);
     
     // Regenerate QR IDs if category changed
     if (category !== undefined) {
       await generateStudentQRIds(db, id);
     }
     
-    res.json({ id: String(id), updated: true });
+    res.json({ id: id, updated: result.affectedRows > 0, ok: true });
   } catch (err) {
     console.error("PUT /api/students error:", err);
     res.status(500).json({ error: String(err.message) });
@@ -251,14 +271,15 @@ export async function bulkCreateStudents(req, res) {
 
   for (const student of students) {
     const { 
-      full_name, first_name, last_name, section, school_id, section_id, grade_id, 
+      full_name, first_name, last_name, roll_no, section, school_id, section_id, grade_id, 
       joined_at, password, category, profile_image_path,
       gender, dob, father_name, mother_name, phone, phone_number, aadhaar,
       address, village, mandal, district, state, pincode, hostel_status, is_hosteller, disabilities
     } = student || {};
 
-    if (!school_id) {
-      results.failed.push({ student, error: "school_id is required" });
+    const parsedSchoolId = Number(school_id);
+    if (!school_id || isNaN(parsedSchoolId)) {
+      results.failed.push({ student, error: "valid school_id is required" });
       continue;
     }
     if (!password || String(password).trim() === "") {
@@ -296,17 +317,41 @@ export async function bulkCreateStudents(req, res) {
       
       const resolvedPhone = phone || phone_number || null;
       const resolvedIsHosteller = (hostel_status === 'Yes' || is_hosteller === true || is_hosteller === 1) ? 1 : 0;
+      
+      // Duplicate Check
+      let existingStudent = null;
+      if (aadhaar) {
+        const [existing] = await db.query(
+          "SELECT id FROM students WHERE school_id = ? AND aadhaar = ? LIMIT 1",
+          [schoolIdNum, aadhaar]
+        );
+        if (existing && existing.length > 0) existingStudent = existing[0];
+      }
+      
+      if (!existingStudent) {
+        const [existing] = await db.query(
+          "SELECT id FROM students WHERE school_id = ? AND first_name = ? AND last_name = ? AND father_name = ? AND (dob = ? OR dob IS NULL) LIMIT 1",
+          [schoolIdNum, firstNameResolved, lastNameResolved, father_name || null, dob || null]
+        );
+        if (existing && existing.length > 0) existingStudent = existing[0];
+      }
+
+      if (existingStudent) {
+        results.failed.push({ student, error: "This student is already registered." });
+        continue;
+      }
 
       const [insertResult] = await db.query(
         `INSERT INTO students (
-          school_id, section_id, first_name, last_name, password, joined_at, category, profile_image_path,
+          school_id, section_id, first_name, last_name, roll_no, password, joined_at, category, profile_image_path,
           gender, dob, father_name, mother_name, phone_number, aadhaar, address, village, mandal, district, state, pincode, is_hosteller, disabilities
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           schoolIdNum, 
           resolvedSectionId, 
           firstNameResolved, 
           lastNameResolved, 
+          roll_no || null,
           passwordPlain, 
           joined_at ? String(joined_at).slice(0, 10) : new Date().toISOString().slice(0, 10), 
           studentCategory,
@@ -344,7 +389,11 @@ export async function bulkCreateStudents(req, res) {
         category: studentCategory
       });
     } catch (err) {
-      results.failed.push({ student, error: err.message });
+      if (err.code === 'ER_DUP_ENTRY') {
+        results.failed.push({ student, error: "This student is already registered." });
+      } else {
+        results.failed.push({ student, error: err.message });
+      }
     }
   }
 
