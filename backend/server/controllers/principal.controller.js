@@ -45,22 +45,44 @@ export async function registerTeacherByPrincipal(req, res) {
 }
 
 export async function registerStudentByPrincipal(req, res) {
-  const { school_id, section_id, first_name, last_name, category, joined_at, profile_image_path } = req.body;
+  const { 
+    school_id, section_id, roll_no, first_name, last_name, category, joined_at, profile_image_path,
+    gender, dob, father_name, mother_name, phone, phone_number, aadhaar,
+    address, village, mandal, district, state, pincode, is_hosteller, disabilities
+  } = req.body;
   if (!school_id || !section_id || !first_name || !last_name) {
     return res.status(400).json({ error: "Missing required fields: school_id, section_id, first_name, last_name" });
   }
   const db = getPool();
   try {
     const [result] = await db.query(
-      "INSERT INTO students (school_id, section_id, first_name, last_name, category, joined_at, profile_image_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      `INSERT INTO students (
+        school_id, section_id, roll_no, first_name, last_name, category, joined_at, profile_image_path,
+        gender, dob, father_name, mother_name, phone_number, aadhaar, address, village, mandal, district, state, pincode, is_hosteller, disabilities
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         Number(school_id), 
         Number(section_id), 
+        roll_no || null,
         first_name, 
         last_name, 
         category || 'General', 
         joined_at || new Date().toISOString().slice(0, 10),
-        profile_image_path || null
+        profile_image_path || null,
+        gender || null,
+        dob || null,
+        father_name || null,
+        mother_name || null,
+        phone || phone_number || null,
+        aadhaar || null,
+        address || null,
+        village || null,
+        mandal || null,
+        district || null,
+        state || "Telangana",
+        pincode || null,
+        (is_hosteller === 1 || is_hosteller === true) ? 1 : 0,
+        disabilities || null
       ]
     );
     const studentId = result.insertId;
