@@ -43,7 +43,7 @@ export async function updateTeacher(req, res) {
     if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
     values.push(id);
     await db.query(`UPDATE teachers SET ${updates.join(", ")} WHERE id = ?`, values);
-    res.json({ id: String(id), updated: true });
+    console.log('TEACHER ASSIGNMENTS API CALLED FOR ID:', id, 'SUBJECTS:', subjectIds, 'SECTIONS:', sectionIds); res.json({ id: String(id), updated: true });
   } catch (err) {
     console.error("PUT /api/teachers error:", err);
     res.status(500).json({ error: String(err.message) });
@@ -204,7 +204,7 @@ export async function markTeacherAttendance(req, res) {
       
       // Upsert attendance record
       await db.query(
-        `INSERT INTO teacher_attendance (teacher_id, school_id, date, status) 
+        `INSERT INTO teacher_attendance (teacher_id, school_id, attendance_date, status) 
          VALUES (?, ?, ?, ?) 
          ON DUPLICATE KEY UPDATE status = VALUES(status)`,
         [teacher_id, school_id, date, status]
@@ -227,7 +227,7 @@ export async function getTeacherAttendance(req, res) {
 
   try {
     const [rows] = await db.query(
-      "SELECT id, teacher_id, school_id, date, status, created_at FROM teacher_attendance WHERE school_id = ? AND date = ?",
+      "SELECT id, teacher_id, school_id, attendance_date as date, status, created_at FROM teacher_attendance WHERE school_id = ? AND attendance_date = ?",
       [school_id, date]
     );
     res.json(rows);
@@ -237,3 +237,133 @@ export async function getTeacherAttendance(req, res) {
   }
 }
 
+export async function getTeacherAssignments(req, res) {
+  const db = getPool();
+  const id = Number(req.params.id);
+
+  console.log("--- getTeacherAssignments START --- ID:", id);
+
+  if (!id) {
+    return res.status(400).json({ error: "id required" });
+  }
+
+  try {
+    const [rows] = await db.query(
+      "SELECT assigned_subject_ids, assigned_class_ids, assigned_section_ids, school_id FROM teachers WHERE id = ? LIMIT 1",
+      [id]
+    );
+
+    console.log("DB RAW ROWS:", JSON.stringify(rows));
+
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ error: "Teacher not found" });
+    }
+
+    const teacher = rows[0];
+    let subjectIds = teacher.assigned_subject_ids || [];
+    let classIds = teacher.assigned_class_ids || [];
+    let sectionIds = teacher.assigned_section_ids || [];
+
+    // Force parsing if strings
+    if (typeof subjectIds === 'string') try { subjectIds = JSON.parse(subjectIds); } catch (_) { subjectIds = []; }
+    if (typeof classIds === 'string') try { classIds = JSON.parse(classIds); } catch (_) { classIds = []; }
+    if (typeof sectionIds === 'string') try { sectionIds = JSON.parse(sectionIds); } catch (_) { sectionIds = []; }
+
+    // Ensure they are arrays
+    if (!Array.isArray(subjectIds)) subjectIds = [];
+    if (!Array.isArray(classIds)) classIds = [];
+    if (!Array.isArray(sectionIds)) sectionIds = [];
+
+    const assignments = [];
+
+    // Get subject names
+    const subjectMap = {};
+    if (subjectIds.length > 0) {
+      const [subRows] = await db.query("SELECT id, subject_name FROM subjects WHERE id IN (?)", [subjectIds]);
+      (subRows || []).forEach(s => { subjectMap[s.id] = s.subject_name; });
+    }
+
+    // Get section info
+    const sectionMap = {};
+    if (sectionIds.length > 0) {
+      const [secRows] = await db.query(
+        "SELECT sec.id, sec.grade_id, sec.section_code, s.school_name FROM sections sec LEFT JOIN schools s ON s.id = sec.school_id WHERE sec.id IN (?)",
+        [sectionIds]
+      );
+      (secRows || []).forEach(s => { sectionMap[s.id] = s; });
+    }
+
+    console.log("RESOLVING ASSIGNMENTS for subs:", subjectIds, "sections:", sectionIds);
+
+    for (const subId of subjectIds) {
+      if (sectionIds.length > 0) {
+        for (const secId of sectionIds) {
+          const sec = sectionMap[secId] || {};
+          assignments.push({
+            id: `${id}-${subId}-${secId}`,
+            teacherId: String(id),
+            schoolId: String(teacher.school_id),
+            classId: String(secId),
+            subjectId: String(subId),
+            subjectName: subjectMap[subId] || `Subject ${subId}`,
+            className: sec.section_code ? `Class ${sec.grade_id}-${sec.section_code}` : `Section ${secId}`,
+            schoolName: sec.school_name || ""
+          });
+        }
+      } else {
+        assignments.push({
+          id: `${id}-${subId}`,
+          teacherId: String(id),
+          schoolId: String(teacher.school_id),
+          classId: "",
+          subjectId: String(subId),
+          subjectName: subjectMap[subId] || `Subject ${subId}`,
+          className: "No class assigned",
+          schoolName: ""
+        });
+      }
+    }
+
+    console.log("RETURNING ASSIGNMENTS COUNT:", assignments.length);
+
+    res.json({
+      DEBUG_VERSION: "v2-explicit-json",
+      assigned_subject_ids: subjectIds,
+      assigned_class_ids: classIds,
+      assigned_section_ids: sectionIds,
+      assignments: assignments
+    });
+  } catch (err) {
+    console.error("GET /api/teachers/:id/assignments error:", err);
+    res.status(500).json({ error: "Failed to fetch teacher assignments" });
+  }
+}
+
+export async function markSelfAttendance(req, res) {
+  const db = getPool();
+  const teacherId = Number(req.params.id);
+  const { status } = req.body; // 'present', 'absent', 'leave'
+  
+  if (!teacherId) return res.status(400).json({ error: "teacherId required" });
+  if (!status || !['present', 'absent', 'leave'].includes(status)) {
+    return res.status(400).json({ error: "valid status ('present', 'absent', 'leave') required" });
+  }
+
+  try {
+    const [teacherRows] = await db.query("SELECT school_id FROM teachers WHERE id = ? LIMIT 1", [teacherId]);
+    if (teacherRows.length === 0) return res.status(404).json({ error: "Teacher not found" });
+    const school_id = teacherRows[0].school_id;
+
+    const [result] = await db.query(
+      `INSERT INTO teacher_attendance (teacher_id, school_id, attendance_date, status) 
+       VALUES (?, ?, CURDATE(), ?)
+       ON DUPLICATE KEY UPDATE status = VALUES(status)`,
+      [teacherId, school_id, status]
+    );
+
+    res.json({ ok: true, message: "Attendance marked successfully", status });
+  } catch (err) {
+    console.error("POST /api/teachers/:id/attendance error:", err);
+    res.status(500).json({ error: "Failed to mark attendance" });
+  }
+}
