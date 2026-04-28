@@ -496,3 +496,52 @@ export async function getStudentDashboard(req, res) {
     res.status(500).json({ error: String(err.message) });
   }
 }
+
+export async function markStudentAttendance(req, res) {
+  const db = getPool();
+  const { date, attendance } = req.body; // attendance is array of { student_id, class_id, status }
+  
+  if (!date || !Array.isArray(attendance)) {
+    return res.status(400).json({ error: "date and attendance array are required" });
+  }
+
+  try {
+    for (const record of attendance) {
+      const { student_id, class_id, status } = record;
+      if (!student_id || !class_id || !status) continue;
+      
+      // Upsert attendance record
+      await db.query(
+        `INSERT INTO attendance (student_id, class_id, date, status) 
+         VALUES (?, ?, ?, ?) 
+         ON DUPLICATE KEY UPDATE status = VALUES(status)`,
+        [student_id, class_id, date, status]
+      );
+    }
+    res.json({ ok: true, message: "Attendance marked successfully" });
+  } catch (err) {
+    console.error("POST /api/students/attendance error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+
+export async function getStudentAttendance(req, res) {
+  const db = getPool();
+  const { class_id, date } = req.query;
+
+  if (!class_id || !date) {
+    return res.status(400).json({ error: "class_id and date are required" });
+  }
+
+  try {
+    const [rows] = await db.query(
+      "SELECT id, student_id, class_id, date, status, created_at FROM attendance WHERE class_id = ? AND date = ?",
+      [class_id, date]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/students/attendance error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+

@@ -150,9 +150,10 @@ export async function getTeacherDashboard(req, res) {
     let assignments = [];
     try {
       const [assignmentRows] = await db.query(
-        `SELECT subject_name, section_code, grade_id 
+        `SELECT sub.subject_name, s.section_code, s.grade_id 
          FROM teacher_assignments ta 
          JOIN sections s ON ta.section_id = s.id 
+         JOIN subjects sub ON ta.subject_id = sub.id
          WHERE ta.teacher_id = ?`,
         [id]
       );
@@ -187,3 +188,52 @@ export async function getTeacherDashboard(req, res) {
     res.status(500).json({ error: String(err.message) });
   }
 }
+
+export async function markTeacherAttendance(req, res) {
+  const db = getPool();
+  const { date, attendance } = req.body; // attendance is array of { teacher_id, school_id, status }
+  
+  if (!date || !Array.isArray(attendance)) {
+    return res.status(400).json({ error: "date and attendance array are required" });
+  }
+
+  try {
+    for (const record of attendance) {
+      const { teacher_id, school_id, status } = record;
+      if (!teacher_id || !school_id || !status) continue;
+      
+      // Upsert attendance record
+      await db.query(
+        `INSERT INTO teacher_attendance (teacher_id, school_id, date, status) 
+         VALUES (?, ?, ?, ?) 
+         ON DUPLICATE KEY UPDATE status = VALUES(status)`,
+        [teacher_id, school_id, date, status]
+      );
+    }
+    res.json({ ok: true, message: "Teacher attendance marked successfully" });
+  } catch (err) {
+    console.error("POST /api/teachers/attendance error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+
+export async function getTeacherAttendance(req, res) {
+  const db = getPool();
+  const { school_id, date } = req.query;
+
+  if (!school_id || !date) {
+    return res.status(400).json({ error: "school_id and date are required" });
+  }
+
+  try {
+    const [rows] = await db.query(
+      "SELECT id, teacher_id, school_id, date, status, created_at FROM teacher_attendance WHERE school_id = ? AND date = ?",
+      [school_id, date]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/teachers/attendance error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+

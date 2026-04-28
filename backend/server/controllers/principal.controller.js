@@ -158,6 +158,165 @@ export async function getSchoolTeachers(req, res) {
   }
 }
 
+// ── Subjects CRUD (manage the subjects master list) ──
+
+export async function getSubjects(req, res) {
+  const db = getPool();
+  try {
+    const [rows] = await db.query("SELECT id, subject_name FROM subjects ORDER BY subject_name");
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/principal/subjects error:", err);
+    res.status(500).json({ error: "Failed to fetch subjects" });
+  }
+}
+
+export async function createSubject(req, res) {
+  const { subject_name } = req.body || {};
+  if (!subject_name || !String(subject_name).trim()) {
+    return res.status(400).json({ error: "subject_name is required" });
+  }
+  const name = String(subject_name).trim();
+  const db = getPool();
+  try {
+    // Check for duplicate
+    const [existing] = await db.query(
+      "SELECT id FROM subjects WHERE subject_name = ? LIMIT 1",
+      [name]
+    );
+    if (existing && existing.length > 0) {
+      return res.status(409).json({ error: `Subject '${name}' already exists` });
+    }
+    const [result] = await db.query(
+      "INSERT INTO subjects (subject_name) VALUES (?)",
+      [name]
+    );
+    res.status(201).json({ ok: true, subject: { id: result.insertId, subject_name: name } });
+  } catch (err) {
+    console.error("POST /api/principal/subjects error:", err);
+    res.status(500).json({ error: "Failed to create subject" });
+  }
+}
+
+export async function updateSubject(req, res) {
+  const subjectId = Number(req.params.subjectId);
+  const { subject_name } = req.body || {};
+  if (!subjectId) return res.status(400).json({ error: "subject id required" });
+  if (!subject_name || !String(subject_name).trim()) {
+    return res.status(400).json({ error: "subject_name is required" });
+  }
+  const name = String(subject_name).trim();
+  const db = getPool();
+  try {
+    // Check subject exists
+    const [existing] = await db.query("SELECT id FROM subjects WHERE id = ? LIMIT 1", [subjectId]);
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ error: "Subject not found" });
+    }
+    // Check for duplicate name (excluding this record)
+    const [dup] = await db.query(
+      "SELECT id FROM subjects WHERE subject_name = ? AND id != ? LIMIT 1",
+      [name, subjectId]
+    );
+    if (dup && dup.length > 0) {
+      return res.status(409).json({ error: `Subject '${name}' already exists` });
+    }
+    await db.query("UPDATE subjects SET subject_name = ? WHERE id = ?", [name, subjectId]);
+    res.json({ ok: true, subject: { id: subjectId, subject_name: name } });
+  } catch (err) {
+    console.error("PUT /api/principal/subjects/:subjectId error:", err);
+    res.status(500).json({ error: "Failed to update subject" });
+  }
+}
+
+export async function deleteSubject(req, res) {
+  const subjectId = Number(req.params.subjectId);
+  if (!subjectId) return res.status(400).json({ error: "subject id required" });
+  const db = getPool();
+  try {
+    // Check subject exists
+    const [existing] = await db.query("SELECT id FROM subjects WHERE id = ? LIMIT 1", [subjectId]);
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ error: "Subject not found" });
+    }
+    // Block deletion if any teacher has this subject assigned
+    const [assigned] = await db.query(
+      "SELECT COUNT(*) AS cnt FROM teacher_subjects WHERE subject_id = ?",
+      [subjectId]
+    );
+    const count = assigned && assigned[0] ? Number(assigned[0].cnt) : 0;
+    if (count > 0) {
+      return res.status(409).json({
+        error: `Cannot delete: ${count} teacher(s) are assigned to this subject. Remove their assignments first.`
+      });
+    }
+    await db.query("DELETE FROM subjects WHERE id = ?", [subjectId]);
+    res.json({ ok: true, deleted: true });
+  } catch (err) {
+    console.error("DELETE /api/principal/subjects/:subjectId error:", err);
+    res.status(500).json({ error: "Failed to delete subject" });
+  }
+}
+
+// ── Teacher ↔ Subject assignment ──
+
+export async function getTeacherSubjects(req, res) {
+  const teacherId = Number(req.params.teacherId);
+  if (!teacherId) return res.status(400).json({ error: "teacher id required" });
+  
+  const db = getPool();
+  try {
+    const [rows] = await db.query(
+      `SELECT ts.subject_id, s.subject_name
+       FROM teacher_subjects ts
+       JOIN subjects s ON s.id = ts.subject_id
+       WHERE ts.teacher_id = ?
+       ORDER BY s.subject_name`,
+      [teacherId]
+    );
+    res.json({ teacher_id: teacherId, subjects: rows });
+  } catch (err) {
+    console.error("GET /api/principal/teachers/:teacherId/subjects error:", err);
+    res.status(500).json({ error: "Failed to fetch teacher subjects" });
+  }
+}
+
+export async function updateTeacherSubjects(req, res) {
+  const teacherId = Number(req.params.teacherId);
+  const { subjects } = req.body;
+  if (!teacherId) return res.status(400).json({ error: "teacher id required" });
+  if (!Array.isArray(subjects)) return res.status(400).json({ error: "subjects array required" });
+  
+  const db = getPool();
+  try {
+    // Verify all provided subject IDs exist
+    if (subjects.length > 0) {
+      const [validSubs] = await db.query(
+        "SELECT id FROM subjects WHERE id IN (?)",
+        [subjects.map(Number)]
+      );
+      if (validSubs.length !== subjects.length) {
+        return res.status(400).json({ error: "One or more subject IDs are invalid" });
+      }
+    }
+
+    // Sync: clear existing and re-insert new list
+    await db.query("DELETE FROM teacher_subjects WHERE teacher_id = ?", [teacherId]);
+    if (subjects.length > 0) {
+      for (const subjectId of subjects) {
+        await db.query(
+          "INSERT INTO teacher_subjects (teacher_id, subject_id) VALUES (?, ?)",
+          [teacherId, Number(subjectId)]
+        );
+      }
+    }
+    res.json({ ok: true, message: "Teacher subjects updated successfully", teacher_id: teacherId, subject_ids: subjects });
+  } catch (err) {
+    console.error("PUT /api/principal/teachers/:teacherId/subjects error:", err);
+    res.status(500).json({ error: "Failed to update teacher subjects" });
+  }
+}
+
 // ── Helper: resolve principal's school_id from JWT ──
 async function getPrincipalSchoolId(db, principalId) {
   const [rows] = await db.query(

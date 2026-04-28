@@ -1,8 +1,11 @@
 import express from "express";
-import { createTeacher, updateTeacher, deleteTeacher, bulkCreateTeachers, getTeacherDashboard } from "../controllers/teacher.controller.js";
+import { createTeacher, updateTeacher, deleteTeacher, bulkCreateTeachers, getTeacherDashboard, markTeacherAttendance, getTeacherAttendance } from "../controllers/teacher.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
 const router = express.Router();
+
+router.post("/attendance", authenticateJWT, authorizeRole(["admin", "principal"]), markTeacherAttendance);
+router.get("/attendance", authenticateJWT, authorizeRole(["admin", "principal"]), getTeacherAttendance);
 
 router.post("/", authenticateJWT, authorizeRole(["admin", "principal"]), createTeacher);
 router.post("/bulk", authenticateJWT, authorizeRole(["admin", "principal"]), bulkCreateTeachers);
