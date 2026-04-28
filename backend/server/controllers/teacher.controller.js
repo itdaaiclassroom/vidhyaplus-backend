@@ -367,3 +367,26 @@ export async function markSelfAttendance(req, res) {
     res.status(500).json({ error: "Failed to mark attendance" });
   }
 }
+
+export async function getTodayAttendance(req, res) {
+  const db = getPool();
+  const teacherId = Number(req.params.id);
+
+  if (!teacherId) return res.status(400).json({ error: "teacherId required" });
+
+  try {
+    const [rows] = await db.query(
+      "SELECT status, attendance_date FROM teacher_attendance WHERE teacher_id = ? AND attendance_date = CURDATE() LIMIT 1",
+      [teacherId]
+    );
+
+    if (rows.length === 0) {
+      return res.json({ marked: false });
+    }
+
+    res.json({ marked: true, status: rows[0].status });
+  } catch (err) {
+    console.error("GET /api/teachers/:id/attendance/today error:", err);
+    res.status(500).json({ error: "Failed to fetch today's attendance" });
+  }
+}
