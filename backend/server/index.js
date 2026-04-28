@@ -20,6 +20,7 @@ import studentRoutes from "./routes/student.routes.js";
 import principalRoutes from "./routes/principal.routes.js";
 import schoolRoutes from "./routes/school.routes.js";
 import adminManagementRoutes from "./routes/admin.routes.js";
+import subjectRoutes from "./routes/subject.routes.js";
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
@@ -39,12 +40,14 @@ if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 app.use("/uploads", express.static(uploadsDir));
 
 // Modular Routes
-app.use("/api", authRoutes); // authRoutes includes /principal/login, etc.
+app.use("/api/auth", authRoutes); // authRoutes includes /login/teacher, /login/student, etc.
+app.use("/api", authRoutes); // Keep /api/principal/login working for the frontend
 app.use("/api/teachers", teacherRoutes);
 app.use("/api/students", studentRoutes);
 app.use("/api/principal", principalRoutes);
 app.use("/api/schools", schoolRoutes);
 app.use("/api/admin", adminManagementRoutes);
+app.use("/api/subjects", subjectRoutes);
 const qrcodesDir = path.join(uploadsDir, "qrcodes");
 const textbookDir = path.join(uploadsDir, "textbook");
 const pptDir = path.join(uploadsDir, "ppt");
@@ -1223,19 +1226,20 @@ app.get("/api/teachers/:id/assignments", async (req, res) => {
   try {
     const [rows] = await db.query(
       `SELECT
-         t.id AS id,
-         t.id AS teacher_id,
-         sec.id AS class_id,
-         t.subject_id AS subject_id,
+         ta.id AS id,
+         ta.teacher_id AS teacher_id,
+         ta.section_id AS class_id,
+         ta.subject_id AS subject_id,
          t.school_id AS school_id,
          subj.subject_name AS subject_name,
          CONCAT('Class ', sec.grade_id, '-', sec.section_code) AS class_name,
          sch.school_name AS school_name
-       FROM teachers t
-       LEFT JOIN subjects subj ON subj.id = t.subject_id
-       LEFT JOIN sections sec ON sec.school_id = t.school_id AND sec.grade_id = 10 AND sec.section_code = 'A'
+       FROM teacher_assignments ta
+       JOIN teachers t ON t.id = ta.teacher_id
+       LEFT JOIN subjects subj ON subj.id = ta.subject_id
+       LEFT JOIN sections sec ON sec.id = ta.section_id
        LEFT JOIN schools sch ON sch.id = t.school_id
-       WHERE t.id = ?`,
+       WHERE ta.teacher_id = ?`,
       [id]
     );
     const list = (rows || []).map((r) => ({
@@ -1264,10 +1268,16 @@ app.put("/api/teachers/:id/assignments", async (req, res) => {
     if (school_id !== undefined) {
       await db.query("UPDATE teachers SET school_id = ? WHERE id = ?", [Number(school_id), id]);
     }
-    if (Array.isArray(assignments) && assignments.length > 0) {
-      const first = assignments[0];
-      const subid = first && first.subject_id != null ? Number(first.subject_id) : null;
-      if (subid != null) await db.query("UPDATE teachers SET subject_id = ? WHERE id = ?", [subid, id]);
+    if (Array.isArray(assignments)) {
+      await db.query("DELETE FROM teacher_assignments WHERE teacher_id = ?", [id]);
+      for (const assign of assignments) {
+        if (assign.subject_id && assign.class_id) {
+          await db.query(
+            "INSERT INTO teacher_assignments (teacher_id, subject_id, section_id) VALUES (?, ?, ?)",
+            [id, Number(assign.subject_id), Number(assign.class_id)]
+          );
+        }
+      }
     }
     res.json({ updated: true });
   } catch (err) {
@@ -3626,6 +3636,28 @@ if (fs.existsSync(distDir)) {
 
 const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || "0.0.0.0";
+
+// Database Initialization
+(async () => {
+  try {
+    const db = getPool();
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS teacher_attendance (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        teacher_id INT UNSIGNED NOT NULL,
+        school_id INT UNSIGNED NOT NULL,
+        date DATE NOT NULL,
+        status ENUM('present', 'absent', 'leave') NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_attendance (teacher_id, date)
+      );
+    `);
+    console.log("[db] Checked/created teacher_attendance table.");
+  } catch (err) {
+    console.error("[db] Init error:", err.message);
+  }
+})();
+
 app.listen(Number(PORT), HOST, () => {
   console.log(`Server running on ${HOST}:${PORT}`);
   const qrOrigin = getEnvPublicWebOrigin();
