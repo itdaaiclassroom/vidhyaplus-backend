@@ -22,10 +22,18 @@ import schoolRoutes from "./routes/school.routes.js";
 import adminManagementRoutes from "./routes/admin.routes.js";
 import subjectRoutes from "./routes/subject.routes.js";
 
+import http from "http";
+import { createWorkers } from "./mediasoup.js";
+import { setupSignaling } from "./signaling.js";
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
 
 const app = express();
+const server = http.createServer(app);
+
+// Setup mediasoup and socket.io signaling
+createWorkers().catch(err => console.error("Failed to create mediasoup workers:", err));
+setupSignaling(server);
 app.use(cors());
 // Allow large JSON body for base64 file uploads (chapter textbook, topic PPT). Base64 ~33% larger than file.
 const jsonLimitBytes = 100 * 1024 * 1024; // 100 MB
@@ -38,6 +46,11 @@ const uploadsDir = process.env.UPLOADS_DIR
   : path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 app.use("/uploads", express.static(uploadsDir));
+
+// Testing Route
+app.get("/test-live", (req, res) => {
+  res.sendFile(path.join(process.cwd(), "backend/server/test-live.html"));
+});
 
 // Modular Routes
 app.use("/api/auth", authRoutes); // authRoutes includes /login/teacher, /login/student, etc.
@@ -3659,6 +3672,7 @@ const HOST = process.env.HOST || "0.0.0.0";
 })();
 
 app.listen(Number(PORT), HOST, () => {
+server.listen(Number(PORT), HOST, () => {
   console.log(`Server running on ${HOST}:${PORT}`);
   const qrOrigin = getEnvPublicWebOrigin();
   if (qrOrigin) {
