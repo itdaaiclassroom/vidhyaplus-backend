@@ -9,7 +9,13 @@ import {
   getSchoolSections,
   createSection,
   updateSection,
-  deleteSection
+  deleteSection,
+  getSubjects,
+  createSubject,
+  updateSubject,
+  deleteSubject,
+  getTeacherSubjects,
+  updateTeacherSubjects
 } from "../controllers/principal.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -24,6 +30,16 @@ router.post("/teachers", registerTeacherByPrincipal);
 router.post("/students", registerStudentByPrincipal);
 router.get("/schools/:schoolId/students", getSchoolStudents);
 router.get("/schools/:schoolId/teachers", getSchoolTeachers);
+
+// Subjects master list CRUD
+router.get("/subjects", getSubjects);
+router.post("/subjects", createSubject);
+router.put("/subjects/:subjectId", updateSubject);
+router.delete("/subjects/:subjectId", deleteSubject);
+
+// Teacher ↔ Subject assignment
+router.get("/teachers/:teacherId/subjects", getTeacherSubjects);
+router.put("/teachers/:teacherId/subjects", updateTeacherSubjects);
 
 // Grades & Sections (Classes) management
 router.get("/grades", getGrades);
