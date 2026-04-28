@@ -3671,7 +3671,6 @@ const HOST = process.env.HOST || "0.0.0.0";
   }
 })();
 
-app.listen(Number(PORT), HOST, () => {
 server.listen(Number(PORT), HOST, () => {
   console.log(`Server running on ${HOST}:${PORT}`);
   const qrOrigin = getEnvPublicWebOrigin();
