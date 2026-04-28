@@ -1,20 +1,23 @@
-# AI API: chatbot (RAG + LLM) and recommendations (YouTube + E-resources)
+# AI API: FastAPI + Uvicorn
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
 python-dotenv>=1.0.0
 pydantic>=2.0.0
 
-# Embeddings (shared by chatbot and recommendations)
-sentence-transformers>=2.2.0
+# PDF Processing & URL Support
+pypdf>=3.0.0
+httpx>=0.25.0
 
-# RAG (chatbot) – optional; server starts without these if files missing
+# Embeddings (Local AI)
+sentence_transformers>=2.2.0
 faiss-cpu>=1.7.0
 numpy>=1.24.0
 
-# LLM (chatbot)
+# LLM (Fallback Local AI)
 transformers>=4.30.0
 torch>=2.0.0
 
-# Recommendations: YouTube + search
+# Recommendations & Web Search
 google-api-python-client>=2.0.0
-duckduckgo-search>=4.0.0
+ddgs>=1.4.0
+requests>=2.31.0
