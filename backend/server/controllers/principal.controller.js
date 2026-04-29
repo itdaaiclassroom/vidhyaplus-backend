@@ -631,27 +631,30 @@ export async function getTeacherAttendanceSummary(req, res) {
 
     const attendanceMap = {};
     attendanceRows.forEach(row => {
-      attendanceMap[row.teacher_id] = row.status;
+      attendanceMap[String(row.teacher_id)] = row.status;
     });
 
-    const present = [], absent = [], leave = [];
+    const present = [], absent = [], leave = [], notMarked = [];
     teachers.forEach(t => {
-      const status = attendanceMap[t.id];
+      const status = attendanceMap[String(t.id)];
       if (status === 'present') present.push(t);
       else if (status === 'leave') leave.push(t);
-      else absent.push(t);
+      else if (status === 'absent') absent.push(t);
+      else notMarked.push(t);
     });
 
-    console.log(`Teacher Attendance Sync [${date}]: Total=${teachers.length}, P=${present.length}, A=${absent.length}, L=${leave.length}`);
+    console.log(`Teacher Attendance Sync [${date}]: Total=${teachers.length}, P=${present.length}, A=${absent.length}, L=${leave.length}, NM=${notMarked.length}`);
 
     res.json({
       total_teachers: teachers.length,
       present_today: present.length,
       absent_today: absent.length,
       leave_today: leave.length,
+      not_marked_today: notMarked.length,
       present_list: present,
       absent_list: absent,
       leave_list: leave,
+      not_marked_list: notMarked,
       date
     });
   } catch (err) {
@@ -684,38 +687,45 @@ export async function getStudentAttendanceSummary(req, res) {
 
     const attendanceMap = {};
     attendanceRows.forEach(row => {
-      attendanceMap[row.student_id] = row.status;
+      attendanceMap[String(row.student_id)] = row.status;
     });
 
     const classBreakdown = {};
     let totalPresent = 0;
+    let totalAbsent = 0;
+    let totalNotMarked = 0;
 
     students.forEach(s => {
       const className = `Class ${s.grade_id}-${s.section_code}`;
       if (!classBreakdown[className]) {
-        classBreakdown[className] = { present: 0, absent: 0, students: [] };
+        classBreakdown[className] = { present: 0, absent: 0, not_marked: 0, students: [] };
       }
 
-      const status = attendanceMap[s.id] || 'absent';
+      const status = attendanceMap[String(s.id)];
       if (status === 'present') {
         totalPresent++;
         classBreakdown[className].present++;
-      } else {
+      } else if (status === 'absent') {
+        totalAbsent++;
         classBreakdown[className].absent++;
+      } else {
+        totalNotMarked++;
+        classBreakdown[className].not_marked++;
       }
 
       classBreakdown[className].students.push({
         id: s.id,
         name: `${s.first_name} ${s.last_name}`,
         roll_no: s.roll_no,
-        status: status
+        status: status || 'not_marked'
       });
     });
 
     res.json({
       total_students: students.length,
       present_today: totalPresent,
-      absent_today: students.length - totalPresent,
+      absent_today: totalAbsent,
+      not_marked_today: totalNotMarked,
       class_breakdown: classBreakdown,
       date
     });

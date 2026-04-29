@@ -35,12 +35,16 @@ export function authorizeRole(roles) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const allowedRoles = Array.isArray(roles) ? roles : [roles];
-    if (!allowedRoles.includes(req.user.role)) {
-      return res.status(403).json({ error: `Forbidden: Requires ${roles} role` });
+    const allowedRoles = (Array.isArray(roles) ? roles : [roles]).map(r => String(r).toLowerCase());
+    const userRole = String(req.user.role || "").toLowerCase();
+    
+    // Admins and Principals are often the same in this context, 
+    // but Admin always has super-access.
+    if (userRole === "admin" || allowedRoles.includes(userRole)) {
+      return next();
     }
 
-    next();
+    return res.status(403).json({ error: `Forbidden: Requires ${roles} role` });
   };
 }
 

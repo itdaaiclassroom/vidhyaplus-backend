@@ -177,3 +177,35 @@ export async function uploadSubjectMaterial(req, res) {
     res.status(500).json({ error: String(err.message) });
   }
 }
+
+// Delete a specific subject material
+export async function deleteSubjectMaterial(req, res) {
+  const db = getPool();
+  const id = Number(req.params.id); // material id
+  if (!id) return res.status(400).json({ error: "id required" });
+
+  try {
+    const [rows] = await db.query("SELECT file_path FROM subject_materials WHERE id = ?", [id]);
+    if (rows && rows[0] && rows[0].file_path) {
+      const url = rows[0].file_path;
+      // Extract key from URL or use as is if relative
+      let key = url;
+      if (url.startsWith('http')) {
+        // Simple extraction: everything after the third slash
+        const parts = url.split('/');
+        key = parts.slice(3).join('/');
+      }
+      try {
+        await assetStorage.deleteUpload(key);
+      } catch (e) {
+        console.warn("Could not delete file from storage:", e.message);
+      }
+    }
+
+    await db.query("DELETE FROM subject_materials WHERE id = ?", [id]);
+    res.json({ ok: true, deleted: true });
+  } catch (err) {
+    console.error("DELETE /api/subjects/materials/:id error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
