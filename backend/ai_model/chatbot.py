@@ -220,6 +220,7 @@ class GenerateQuizBody(BaseModel):
     topic_name: str
     subject: str = ""
     grade: int = 10
+    count: int = 10  # Dynamic number of questions
 
 
 def _parse_mcqs_from_text(text: str, max_questions: int = 10):
@@ -268,14 +269,15 @@ def _parse_mcqs_from_text(text: str, max_questions: int = 10):
 
 @router.post("/generate_quiz")
 def generate_quiz(body: GenerateQuizBody):
-    """Generate 10 MCQs for a topic using RAG context. Returns list of { question_text, option_a..d, correct_option, explanation }."""
+    """Generate N MCQs for a topic using RAG context. Returns list of { question_text, option_a..d, correct_option, explanation }."""
     topic = (body.topic_name or "").strip() or "General"
     subject = (body.subject or "").strip() or "Subject"
     grade = body.grade or 10
+    count = max(1, min(body.count, 20)) # Safety limit 1-20
     query = f"{subject} class {grade} {topic}"
     retrieved = retrieve_chunks(query)
     context = "\n\n".join(retrieved[:5])[:2500] if retrieved else f"Topic: {topic}. Subject: {subject}. Class: {grade}."
-    prompt = f"""Generate exactly 10 multiple choice questions (MCQ) for class {grade} topic: {topic} ({subject}).
+    prompt = f"""Generate exactly {count} multiple choice questions (MCQ) for class {grade} topic: {topic} ({subject}).
 Use ONLY the context below. Each question must have 4 options labeled A, B, C, D and one correct answer.
 Format each question exactly like this:
 Question 1: [question text]
@@ -296,29 +298,28 @@ Generate 10 questions:"""
     # Try Ollama first for high quality quizzes
     ollama_raw = call_ollama(prompt)
     if ollama_raw:
-        out = _parse_mcqs_from_text(ollama_raw, 10)
-        if len(out) >= 5: # Only return if we got at least 5 good questions
-            return {"questions": out[:10]}
+        out = _parse_mcqs_from_text(ollama_raw, count)
+        if len(out) >= (count // 2): 
+            return {"questions": out[:count]}
 
-    out = []
     out = []
     try:
         if llm_task == "text2text-generation" and llm:
             res = llm(prompt, max_new_tokens=1024, do_sample=False)
             raw = (res[0].get("generated_text") or "") if res else ""
             if "Question" in raw or "Q1" in raw:
-                out = _parse_mcqs_from_text(raw, 10)
+                out = _parse_mcqs_from_text(raw, count)
         if not out and llm:
             res = llm(prompt, max_new_tokens=800, temperature=0.3, do_sample=True, repetition_penalty=1.2)
             raw = (res[0].get("generated_text") or "") if res else ""
-            out = _parse_mcqs_from_text(raw, 10)
+            out = _parse_mcqs_from_text(raw, count)
     except Exception:
         pass
-    if len(out) < 10:
-        for i in range(len(out), 10):
+    if len(out) < count:
+        for i in range(len(out), count):
             out.append({
                 "question_text": f"Question {i+1} on {topic} (generation incomplete).",
                 "option_a": "Option A", "option_b": "Option B", "option_c": "Option C", "option_d": "Option D",
                 "correct_option": "A", "explanation": "Refer to textbook.",
             })
-    return {"questions": out[:10]}
+    return {"questions": out[:count]}
