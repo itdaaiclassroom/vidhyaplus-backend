@@ -3665,7 +3665,64 @@ const HOST = process.env.HOST || "0.0.0.0";
         UNIQUE KEY unique_attendance (teacher_id, date)
       );
     `);
-    console.log("[db] Checked/created teacher_attendance table.");
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS subject_materials (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        subject_id INT UNSIGNED NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        file_path VARCHAR(1024) NOT NULL,
+        uploaded_by VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    // Ensure subjects table has grades and icon columns
+    try {
+      await db.query("ALTER TABLE subjects ADD COLUMN grades VARCHAR(255) AFTER subject_name");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE subjects ADD COLUMN icon VARCHAR(255) AFTER grades");
+    } catch (_) {}
+
+    // Add JSON columns to teachers table for assignments
+    try {
+      await db.query("ALTER TABLE teachers ADD COLUMN assigned_subject_ids JSON NULL");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teachers ADD COLUMN assigned_class_ids JSON NULL");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teachers ADD COLUMN assigned_section_ids JSON NULL");
+    } catch (_) {}
+
+    // Update teacher_attendance table
+    try {
+      await db.query("ALTER TABLE teacher_attendance ADD COLUMN school_id INT UNSIGNED");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teacher_attendance CHANGE date attendance_date DATE NOT NULL");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teacher_attendance ADD COLUMN status ENUM('present','absent','leave')");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teacher_attendance DROP INDEX unique_attendance");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teacher_attendance ADD UNIQUE KEY unique_teacher_day (teacher_id, attendance_date)");
+    } catch (_) {}
+
+    // Update student attendance table
+    try {
+      await db.query("ALTER TABLE attendance CHANGE date attendance_date DATE NOT NULL");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE attendance ADD COLUMN teacher_id INT UNSIGNED NULL");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE attendance ADD COLUMN section_id INT UNSIGNED NULL");
+    } catch (_) {}
+
+    console.log("[db] Checked/created required tables and modified schemas for assignments and attendance.");
   } catch (err) {
     console.error("[db] Init error:", err.message);
   }
