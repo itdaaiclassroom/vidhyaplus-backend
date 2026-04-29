@@ -1,4 +1,5 @@
 import getPool from "../config/db.js";
+import * as assetStorage from "../storage.js";
 
 export async function createTeacher(req, res) {
   const db = getPool();
@@ -237,3 +238,38 @@ export async function getTeacherAttendance(req, res) {
   }
 }
 
+export async function getSchoolStudentsbyteachers(req, res) {
+  const schoolId = Number(req.params.schoolId);
+  if (!schoolId) return res.status(400).json({ error: "school id required" });
+  const db = getPool();
+  try {
+    const [rows] = await db.query(`
+      SELECT s.*, sec.grade_id, sec.section_code,
+             GROUP_CONCAT(CONCAT(sq.qr_type, ':', sq.qr_code_value) SEPARATOR '|') as qr_codes_raw
+      FROM students s
+      JOIN sections sec ON sec.id = s.section_id
+      LEFT JOIN student_qr_codes sq ON sq.student_id = s.id
+      WHERE s.school_id = ?
+      GROUP BY s.id
+      ORDER BY s.id DESC
+    `, [schoolId]);
+    
+    const students = rows.map(r => {
+      const qrs = (r.qr_codes_raw || "").split('|').filter(Boolean).map(qc => {
+        const [type, value] = qc.split(':');
+        return { type, value };
+      });
+      const { qr_codes_raw, ...rest } = r;
+      return { 
+        ...rest, 
+        qr_codes: qrs,
+        profile_image_url: r.profile_image_path ? assetStorage.getPublicUrl(r.profile_image_path) : null
+      };
+    });
+    
+    res.json(students);
+  } catch (err) {
+    console.error("GET /api/teachers/:schoolId/students error:", err);
+    res.status(500).json({ error: "Failed to fetch students" });
+  }
+}
