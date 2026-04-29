@@ -14,6 +14,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from pypdf import PdfReader
+from build_index import build as rebuild_rag_index
 
 router = APIRouter(tags=["segmentation"])
 
@@ -367,6 +368,10 @@ def extract_textbook(req: TextbookRequest):
     Supports local files and Cloudflare R2 / S3 bucket URLs.
     """
     try:
+        # ── Step 0: Auto-Index for RAG (Chatbot & Quizzes) ──
+        print(f"[segmentation] Triggering auto-index for: {req.pdf_path}")
+        rebuild_rag_index(req.pdf_path)
+
         reader = _get_pdf_reader(req.pdf_path)
         total_pages = len(reader.pages)
 

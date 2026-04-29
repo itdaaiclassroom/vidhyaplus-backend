@@ -14,13 +14,22 @@ def build(pdf_path: str, chunk_size: int = 500, chunk_overlap: int = 100):
     import faiss
     import numpy as np
     from sentence_transformers import SentenceTransformer
+    import httpx
+    import io
 
-    pdf = Path(pdf_path)
-    if not pdf.exists():
-        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+    if pdf_path.startswith(("http://", "https://")):
+        print(f"[build_index] Downloading PDF from URL: {pdf_path}")
+        response = httpx.get(pdf_path, follow_redirects=True, timeout=60.0)
+        if response.status_code != 200:
+            raise Exception(f"Failed to download PDF: HTTP {response.status_code}")
+        reader = PdfReader(io.BytesIO(response.content))
+    else:
+        pdf = Path(pdf_path)
+        if not pdf.exists():
+            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+        print(f"[build_index] Reading local PDF: {pdf_path}")
+        reader = PdfReader(str(pdf))
 
-    print(f"[build_index] Reading PDF: {pdf_path}")
-    reader = PdfReader(str(pdf))
     full_text = ""
     for i, page in enumerate(reader.pages):
         text = page.extract_text() or ""
