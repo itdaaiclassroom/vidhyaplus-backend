@@ -1,4 +1,5 @@
 import getPool from "../config/db.js";
+import * as assetStorage from "../storage.js";
 
 export async function createTeacher(req, res) {
   const db = getPool();

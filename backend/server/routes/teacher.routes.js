@@ -6,7 +6,7 @@ const router = express.Router();
 
 router.post("/attendance", authenticateJWT, authorizeRole(["admin", "principal"]), markTeacherAttendance);
 router.get("/attendance", authenticateJWT, authorizeRole(["admin", "principal"]), getTeacherAttendance);
-
+router.get("/:schoolId/students", authenticateJWT, authorizeRole(["teacher", "principal", "admin"]), getSchoolStudentsbyteachers);
 router.post("/", authenticateJWT, authorizeRole(["admin", "principal"]), createTeacher);
 router.post("/bulk", authenticateJWT, authorizeRole(["admin", "principal"]), bulkCreateTeachers);
 router.get("/dashboard/:id", authenticateJWT, getTeacherDashboard);

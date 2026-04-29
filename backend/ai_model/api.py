@@ -1,4 +1,4 @@
-"""AI API entry: CORS, .env, and chatbot + recommendations routers."""
+"""AI API entry: CORS, .env, chatbot + ingest + recommendations + segmentation routers."""
 import os
 from pathlib import Path
 
@@ -17,8 +17,13 @@ import shared_embeddings  # noqa: F401
 from chatbot import router as chatbot_router
 from recommendations import router as recommendations_router
 from segmentation import router as segmentation_router
+from ingest import router as ingest_router, migrate_legacy_index
 
-app = FastAPI()
+app = FastAPI(
+    title="VidhyaPlus AI Teacher API",
+    description="Real-time AI teacher assistant: multi-doc RAG, quiz generation, and content recommendations.",
+    version="2.0.0",
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,6 +34,7 @@ app.add_middleware(
 )
 
 app.include_router(chatbot_router)
+app.include_router(ingest_router)
 app.include_router(recommendations_router)
 app.include_router(segmentation_router)
 
@@ -45,7 +51,16 @@ def _validate_ai_env() -> None:
 
 _validate_ai_env()
 
+# Migrate legacy single-file index into new multi-doc layout (runs once)
+migrate_legacy_index()
+
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    """Health check — also reports doc count and Ollama status."""
+    from chatbot import document_registry, ollama_available
+    return {
+        "ok": True,
+        "doc_count": document_registry.doc_count,
+        "ollama_available": ollama_available(),
+    }
