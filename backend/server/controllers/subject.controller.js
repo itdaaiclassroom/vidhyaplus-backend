@@ -45,6 +45,15 @@ export async function createSubject(req, res) {
   }
 
   try {
+    // Check for duplicate name
+    const [existing] = await db.query(
+      "SELECT id FROM subjects WHERE subject_name = ? LIMIT 1",
+      [name]
+    );
+    if (existing && existing.length > 0) {
+      return res.status(409).json({ error: `Subject '${name}' already exists` });
+    }
+
     const [result] = await db.query(
       "INSERT INTO subjects (subject_name, grades, icon) VALUES (?, ?, ?)",
       [name, grades || null, icon || '📚']
@@ -100,6 +109,103 @@ export async function deleteSubject(req, res) {
     res.json({ ok: true, deleted: result.affectedRows > 0 });
   } catch (err) {
     console.error("DELETE /api/subjects/:id error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+
+// Fetch all materials for a subject
+export async function getSubjectMaterials(req, res) {
+  const db = getPool();
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ error: "id required" });
+
+  try {
+    const [rows] = await db.query(
+      "SELECT id, subject_id, title, file_path, uploaded_by, created_at FROM subject_materials WHERE subject_id = ? ORDER BY created_at DESC",
+      [id]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/subjects/:id/materials error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+
+// Upload a new material for a subject
+import * as assetStorage from "./../storage.js";
+
+export async function uploadSubjectMaterial(req, res) {
+  const db = getPool();
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ error: "id required" });
+
+  try {
+    const { title, file, contentType = "application/pdf" } = req.body;
+    if (!title) return res.status(400).json({ error: "title required" });
+    if (!file) return res.status(400).json({ error: "file (base64) required" });
+
+    // Validate subject exists
+    const [subjRows] = await db.query("SELECT id FROM subjects WHERE id = ?", [id]);
+    if (subjRows.length === 0) return res.status(404).json({ error: "Subject not found" });
+
+    // Save file via assetStorage
+    const safeKey = `subject_materials/sub${id}_${Date.now()}.pdf`;
+    const buffer = Buffer.from(file.replace(/^data:[^;]+;base64,/, ""), "base64");
+    
+    if (buffer.length === 0) {
+      return res.status(400).json({ error: "file content is empty" });
+    }
+
+    await assetStorage.saveUploadBuffer(safeKey, buffer, contentType);
+    const publicUrl = assetStorage.getPublicUrl(safeKey);
+
+    // Save record to DB
+    const [result] = await db.query(
+      "INSERT INTO subject_materials (subject_id, title, file_path, uploaded_by) VALUES (?, ?, ?, ?)",
+      [id, title, publicUrl, "admin"]
+    );
+
+    res.status(201).json({
+      id: String(result.insertId),
+      subject_id: id,
+      title,
+      file_path: publicUrl,
+      uploaded_by: "admin"
+    });
+  } catch (err) {
+    console.error("POST /api/subjects/:id/materials error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+
+// Delete a specific subject material
+export async function deleteSubjectMaterial(req, res) {
+  const db = getPool();
+  const id = Number(req.params.id); // material id
+  if (!id) return res.status(400).json({ error: "id required" });
+
+  try {
+    const [rows] = await db.query("SELECT file_path FROM subject_materials WHERE id = ?", [id]);
+    if (rows && rows[0] && rows[0].file_path) {
+      const url = rows[0].file_path;
+      // Extract key from URL or use as is if relative
+      let key = url;
+      if (url.startsWith('http')) {
+        // Simple extraction: everything after the third slash
+        const parts = url.split('/');
+        key = parts.slice(3).join('/');
+      }
+      try {
+        await assetStorage.deleteUpload(key);
+      } catch (e) {
+        console.warn("Could not delete file from storage:", e.message);
+      }
+    }
+
+    await db.query("DELETE FROM subject_materials WHERE id = ?", [id]);
+    res.json({ ok: true, deleted: true });
+  } catch (err) {
+    console.error("DELETE /api/subjects/materials/:id error:", err);
     res.status(500).json({ error: String(err.message) });
   }
 }

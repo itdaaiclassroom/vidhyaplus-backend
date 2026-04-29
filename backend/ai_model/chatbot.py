@@ -334,8 +334,15 @@ Teacher's answer:"""
 # Quiz helpers
 # ---------------------------------------------------------------------------
 
-def _parse_mcqs_from_text(text: str, max_questions: int = 10) -> list[dict]:
-    """Parse MCQ block into list of structured dicts."""
+class GenerateQuizBody(BaseModel):
+    topic_name: str
+    subject: str = ""
+    grade: int = 10
+    count: int = 10  # Dynamic number of questions
+
+
+def _parse_mcqs_from_text(text: str, max_questions: int = 10):
+    """Parse block of MCQ text into list of { question_text, option_a, option_b, option_c, option_d, correct_option, explanation }."""
     import re
     questions = []
     block = (text or "").strip()
@@ -379,28 +386,20 @@ def _parse_mcqs_from_text(text: str, max_questions: int = 10) -> list[dict]:
     return questions[:max_questions]
 
 
-def generate_quiz(
-    topic: str,
-    subject: str = "General",
-    grade: int = 10,
-    num_questions: int = 10,
-) -> list[dict]:
-    """
-    Generate MCQs using RAG context + Ollama/LLM.
-    Returns list of MCQ dicts.
-    """
-    num_questions = max(1, min(30, num_questions))
+@router.post("/generate_quiz")
+def generate_quiz(body: GenerateQuizBody):
+    """Generate N MCQs for a topic using RAG context. Returns list of { question_text, option_a..d, correct_option, explanation }."""
+    topic = (body.topic_name or "").strip() or "General"
+    subject = (body.subject or "").strip() or "Subject"
+    grade = body.grade or 10
+    count = max(1, min(body.count, 20)) # Safety limit 1-20
     query = f"{subject} class {grade} {topic}"
-    results = document_registry.retrieve_chunks(query, k=8)
-    context = "\n\n".join(c for c, _ in results[:6])[:3000] if results else f"Topic: {topic}. Subject: {subject}. Grade: {grade}."
-
-    prompt = f"""You are an expert {subject} teacher for Class {grade}.
-Generate exactly {num_questions} multiple choice questions (MCQs) on the topic: "{topic}".
-
-Use ONLY the syllabus context provided below.
-Each question MUST follow this EXACT format (no deviations):
-
-Question 1: [question text here]
+    retrieved = retrieve_chunks(query)
+    context = "\n\n".join(retrieved[:5])[:2500] if retrieved else f"Topic: {topic}. Subject: {subject}. Class: {grade}."
+    prompt = f"""Generate exactly {count} multiple choice questions (MCQ) for class {grade} topic: {topic} ({subject}).
+Use ONLY the context below. Each question must have 4 options labeled A, B, C, D and one correct answer.
+Format each question exactly like this:
+Question 1: [question text]
 A) [option A]
 B) [option B]
 C) [option C]
@@ -425,127 +424,29 @@ Generate {num_questions} questions now:"""
     # Ollama gives best quality quizzes
     ollama_raw = call_ollama(prompt, max_tokens=min(2000, num_questions * 120))
     if ollama_raw:
-        out = _parse_mcqs_from_text(ollama_raw, num_questions)
-        if len(out) >= max(1, num_questions // 2):
-            return _pad_questions(out, num_questions, topic)
+        out = _parse_mcqs_from_text(ollama_raw, count)
+        if len(out) >= (count // 2): 
+            return {"questions": out[:count]}
 
     # HF model fallback
     out = []
-    if llm:
-        try:
-            if llm_task == "text2text-generation":
-                res = llm(prompt, max_new_tokens=min(1024, num_questions * 100), do_sample=False)
-            else:
-                res = llm(prompt, max_new_tokens=800, temperature=0.3, do_sample=True, repetition_penalty=1.2)
+    try:
+        if llm_task == "text2text-generation" and llm:
+            res = llm(prompt, max_new_tokens=1024, do_sample=False)
             raw = (res[0].get("generated_text") or "") if res else ""
             if "Question" in raw or "Q1" in raw:
-                out = _parse_mcqs_from_text(raw, num_questions)
-        except Exception:
-            pass
-
-    return _pad_questions(out, num_questions, topic)
-
-
-def _pad_questions(out: list[dict], target: int, topic: str) -> list[dict]:
-    """Pad with placeholder questions if generation was incomplete."""
-    while len(out) < target:
-        i = len(out) + 1
-        out.append({
-            "question_text": f"Question {i}: About {topic} (could not generate — check Ollama is running).",
-            "option_a": "Option A",
-            "option_b": "Option B",
-            "option_c": "Option C",
-            "option_d": "Option D",
-            "correct_option": "A",
-            "explanation": "Install Ollama (ollama.com) and run 'ollama pull mistral' for full quiz generation.",
-        })
-    return out[:target]
-
-
-# ---------------------------------------------------------------------------
-# FastAPI Router
-# ---------------------------------------------------------------------------
-
-router = APIRouter(tags=["chatbot"])
-
-
-class Question(BaseModel):
-    question: str
-    topic: Optional[str] = None
-    subject: Optional[str] = None
-    chapter: Optional[str] = None
-
-
-class GenerateQuizBody(BaseModel):
-    topic_name: str
-    subject: str = ""
-    grade: int = 10
-    num_questions: int = 10  # ← new: configurable (1-30)
-
-
-@router.post("/ask")
-def ask(q: Question):
-    """Ask the AI teacher a question. Returns answer + source documents used."""
-    question = (q.question or "").strip()
-    if not question:
-        return {"question": "", "answer": "Please ask a question.", "sources": []}
-    try:
-        answer, sources = generate_answer(question, q.topic, q.subject, q.chapter)
-        return {
-            "question": question,
-            "answer": answer,
-            "sources": sources,
-            "doc_count": document_registry.doc_count,
-            "ollama_active": ollama_available(),
-        }
-    except Exception as e:
-        return {
-            "question": question,
-            "answer": f"Sorry, I couldn't process that. Please try again. ({str(e)[:80]})",
-            "sources": [],
-        }
-
-
-@router.post("/quiz")
-def quiz_endpoint(body: GenerateQuizBody):
-    """
-    Generate MCQs for a topic.
-    
-    Body: { topic_name, subject, grade, num_questions (1-30) }
-    Returns: { questions: [...], topic, subject, grade, num_questions }
-    """
-    topic = (body.topic_name or "").strip() or "General"
-    subject = (body.subject or "").strip() or "General"
-    grade = body.grade or 10
-    num_questions = max(1, min(30, body.num_questions or 10))
-    try:
-        questions = generate_quiz(topic, subject, grade, num_questions)
-        return {
-            "questions": questions,
-            "topic": topic,
-            "subject": subject,
-            "grade": grade,
-            "num_questions": len(questions),
-            "ollama_active": ollama_available(),
-        }
-    except Exception as e:
-        return {
-            "questions": [],
-            "error": f"Quiz generation failed: {str(e)[:200]}",
-            "topic": topic,
-        }
-
-
-@router.get("/ai-status")
-def ai_status():
-    """Returns status of the AI system: docs loaded, Ollama availability."""
-    from ingest import _load_manifest
-    docs = _load_manifest()
-    return {
-        "ok": True,
-        "doc_count": document_registry.doc_count,
-        "documents": docs,
-        "ollama_available": ollama_available(),
-        "ollama_model": _ollama_model,
-        "fallback_llm": _model_name if llm else None,
-    }
+                out = _parse_mcqs_from_text(raw, count)
+        if not out and llm:
+            res = llm(prompt, max_new_tokens=800, temperature=0.3, do_sample=True, repetition_penalty=1.2)
+            raw = (res[0].get("generated_text") or "") if res else ""
+            out = _parse_mcqs_from_text(raw, count)
+    except Exception:
+        pass
+    if len(out) < count:
+        for i in range(len(out), count):
+            out.append({
+                "question_text": f"Question {i+1} on {topic} (generation incomplete).",
+                "option_a": "Option A", "option_b": "Option B", "option_c": "Option C", "option_d": "Option D",
+                "correct_option": "A", "explanation": "Refer to textbook.",
+            })
+    return {"questions": out[:count]}

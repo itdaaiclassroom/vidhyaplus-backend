@@ -499,23 +499,29 @@ export async function getStudentDashboard(req, res) {
 
 export async function markStudentAttendance(req, res) {
   const db = getPool();
-  const { date, attendance } = req.body; // attendance is array of { student_id, class_id, status }
+  // Support both date and attendance_date from frontend
+  const attendanceDate = req.body.attendance_date || req.body.date;
+  const attendance = req.body.attendance; // array of { student_id, class_id, status, section_id, teacher_id }
   
-  if (!date || !Array.isArray(attendance)) {
-    return res.status(400).json({ error: "date and attendance array are required" });
+  if (!attendanceDate || !Array.isArray(attendance)) {
+    return res.status(400).json({ error: "date/attendance_date and attendance array are required" });
   }
 
   try {
     for (const record of attendance) {
-      const { student_id, class_id, status } = record;
-      if (!student_id || !class_id || !status) continue;
+      const { student_id, class_id, status, section_id, teacher_id } = record;
+      if (!student_id || !status) continue;
       
+      const cId = class_id || null;
+      const sId = section_id || null;
+      const tId = teacher_id || null;
+
       // Upsert attendance record
       await db.query(
-        `INSERT INTO attendance (student_id, class_id, date, status) 
-         VALUES (?, ?, ?, ?) 
-         ON DUPLICATE KEY UPDATE status = VALUES(status)`,
-        [student_id, class_id, date, status]
+        `INSERT INTO attendance (student_id, class_id, section_id, teacher_id, attendance_date, status) 
+         VALUES (?, ?, ?, ?, ?, ?) 
+         ON DUPLICATE KEY UPDATE status = VALUES(status), teacher_id = VALUES(teacher_id)`,
+        [student_id, cId, sId, tId, attendanceDate, status]
       );
     }
     res.json({ ok: true, message: "Attendance marked successfully" });
@@ -527,16 +533,18 @@ export async function markStudentAttendance(req, res) {
 
 export async function getStudentAttendance(req, res) {
   const db = getPool();
-  const { class_id, date } = req.query;
+  const class_id = req.query.class_id || req.query.section_id; // Frontend might send section_id
+  const date = req.query.attendance_date || req.query.date;
 
   if (!class_id || !date) {
-    return res.status(400).json({ error: "class_id and date are required" });
+    return res.status(400).json({ error: "class_id/section_id and date are required" });
   }
 
   try {
+    // Match either class_id or section_id for flexibility with existing frontend
     const [rows] = await db.query(
-      "SELECT id, student_id, class_id, date, status, created_at FROM attendance WHERE class_id = ? AND date = ?",
-      [class_id, date]
+      "SELECT id, student_id, class_id, section_id, teacher_id, attendance_date, status, created_at FROM attendance WHERE (class_id = ? OR section_id = ?) AND attendance_date = ?",
+      [class_id, class_id, date]
     );
     res.json(rows);
   } catch (err) {
@@ -545,3 +553,27 @@ export async function getStudentAttendance(req, res) {
   }
 }
 
+export async function updateStudentAttendance(req, res) {
+  const db = getPool();
+  const id = Number(req.params.id);
+  const { status } = req.body;
+
+  if (!id) return res.status(400).json({ error: "attendance id required" });
+  if (!status) return res.status(400).json({ error: "status required" });
+
+  try {
+    const [result] = await db.query(
+      "UPDATE attendance SET status = ? WHERE id = ?",
+      [status, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Attendance record not found" });
+    }
+
+    res.json({ ok: true, message: "Attendance updated successfully" });
+  } catch (err) {
+    console.error("PUT /api/students/attendance/:id error:", err);
+    res.status(500).json({ error: "Failed to update attendance" });
+  }
+}

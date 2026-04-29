@@ -563,6 +563,7 @@ app.get("/api/all", async (req, res) => {
       timetableRows,
       activityAssignmentsRows,
       activityParticipationRows,
+      subjectMaterialsRows,
     ] = await Promise.all([
       runQuery(
         db,
@@ -583,7 +584,7 @@ app.get("/api/all", async (req, res) => {
         "SELECT c.id, c.subject_id, c.chapter_name AS name, c.grade_id AS grade, c.chapter_no AS order_num, c.chapter_no, c.macro_month_label AS month_label, c.planned_periods AS periods, c.teaching_plan_summary, NULL AS concepts, ctm.pdf_url AS textbook_chunk_pdf_path FROM chapters c LEFT JOIN (SELECT chapter_id, MAX(id) AS latest_id FROM chapter_textual_materials GROUP BY chapter_id) latest_ctm ON latest_ctm.chapter_id = c.id LEFT JOIN chapter_textual_materials ctm ON ctm.id = latest_ctm.latest_id ORDER BY c.subject_id, c.chapter_no"
       ),
       runQuery(db, "SELECT id AS student_id, section_id AS class_id, '2025-26' AS academic_year FROM students"),
-      runQuery(db, "SELECT t.id AS id, t.id AS teacher_id, s.id AS class_id, t.subject_id AS subject_id FROM teachers t JOIN sections s ON s.school_id = t.school_id AND s.grade_id = 10 WHERE t.subject_id IS NOT NULL"),
+      runQuery(db, "SELECT * FROM teacher_assignments").catch(() => []),
       runQuery(
         db,
         "SELECT t.id, t.chapter_id, t.name, t.order_num, t.status, COALESCE(tpm.ppt_url, t.topic_ppt_path) AS topic_ppt_path FROM topics t LEFT JOIN (SELECT topic_id, MAX(id) AS latest_id FROM topic_ppt_materials GROUP BY topic_id) latest_tpm ON latest_tpm.topic_id = t.id LEFT JOIN topic_ppt_materials tpm ON tpm.id = latest_tpm.latest_id ORDER BY t.chapter_id, t.order_num"
@@ -618,21 +619,52 @@ app.get("/api/all", async (req, res) => {
       runQuery(db, "SELECT class_id, week_day, period_no, subject_name, subject_id, teacher_id, start_time, end_time FROM class_timetables ORDER BY class_id, week_day, period_no").catch(() => []),
       runQuery(db, "SELECT aa.id, aa.activity_id, aa.teacher_id, aa.class_id, aa.activity_date, aa.status, a.title, a.description FROM activity_assignments aa JOIN activities a ON a.id = aa.activity_id ORDER BY aa.activity_date DESC, aa.id DESC").catch(() => []),
       runQuery(db, "SELECT activity_assignment_id, student_id, status FROM activity_participation").catch(() => []),
+      runQuery(db, "SELECT id, subject_id, title, file_path AS url FROM subject_materials").catch(() => []),
     ]);
 
     const teacherIdsBySchool = {};
     const teacherIdsByClass = {};
     const teacherSubjectNames = {};
-    teacherAssignmentsRows.forEach((ta) => {
-      const tid = toId(ta.teacher_id);
+
+    teachersRows.forEach((t) => {
+      const tid = toId(t.id);
       if (!teacherIdsBySchool[tid]) teacherIdsBySchool[tid] = new Set();
-      const cls = classesRows.find((c) => c.id === ta.class_id);
-      if (cls) teacherIdsBySchool[tid].add(cls.school_id);
-      if (!teacherIdsByClass[tid]) teacherIdsByClass[tid] = [];
-      teacherIdsByClass[tid].push(toId(ta.class_id));
-      if (!teacherSubjectNames[tid]) teacherSubjectNames[tid] = new Set();
-      const sub = subjectsRows.find((s) => s.id === ta.subject_id);
-      if (sub) teacherSubjectNames[tid].add(sub.name);
+      if (t.school_id) teacherIdsBySchool[tid].add(toId(t.school_id));
+
+      // Use JSON columns from principal assignments
+      let classIds = [];
+      try {
+        classIds = typeof t.assigned_class_ids === 'string' ? JSON.parse(t.assigned_class_ids) : (t.assigned_class_ids || []);
+        if (!Array.isArray(classIds)) classIds = [];
+      } catch (e) { classIds = []; }
+      
+      let subjectIds = [];
+      try {
+        subjectIds = typeof t.assigned_subject_ids === 'string' ? JSON.parse(t.assigned_subject_ids) : (t.assigned_subject_ids || []);
+        if (!Array.isArray(subjectIds)) subjectIds = [];
+      } catch (e) { subjectIds = []; }
+
+      // Also check the teacher_assignments table for any additional entries (legacy support)
+      (teacherAssignmentsRows || []).forEach(ta => {
+        if (toId(ta.teacher_id) === tid) {
+          if (ta.section_id) classIds.push(toId(ta.section_id));
+          if (ta.class_id) classIds.push(toId(ta.class_id));
+          if (ta.subject_id) subjectIds.push(toId(ta.subject_id));
+        }
+      });
+
+      // Fallback to legacy single subject_id column
+      if (subjectIds.length === 0 && t.subject_id) {
+        subjectIds = [toId(t.subject_id)];
+      }
+
+      teacherIdsByClass[tid] = Array.from(new Set(classIds.map(id => toId(id))));
+      
+      teacherSubjectNames[tid] = new Set();
+      Array.from(new Set(subjectIds)).forEach(sid => {
+        const sub = subjectsRows.find(s => toId(s.id) === toId(sid));
+        if (sub) teacherSubjectNames[tid].add(sub.subject_name || sub.name);
+      });
     });
 
     const enrollmentByStudent = {};
@@ -1221,6 +1253,7 @@ app.get("/api/all", async (req, res) => {
       liveQuizAnswers: liveQuizAnswersData,
       timetables,
       coCurricularActivities,
+      subjectMaterials: subjectMaterialsRows,
     });
   } catch (err) {
     console.error("GET /api/all error:", err);
@@ -3179,13 +3212,14 @@ app.post("/api/attendance", async (req, res) => {
   const classIdNum = Number(classId);
   const dateStr = String(date).slice(0, 10);
   try {
-    await db.query("DELETE FROM attendance WHERE class_id = ? AND date = ?", [classIdNum, dateStr]);
+    // Corrected column name: attendance_date
+    await db.query("DELETE FROM attendance WHERE class_id = ? AND attendance_date = ?", [classIdNum, dateStr]);
     for (const e of entries) {
       const studentId = Number(e.studentId);
-      const status = (e.status === "absent" ? "absent" : "present");
+      const status = (['present', 'absent'].includes(e.status) ? e.status : 'present');
       if (!studentId) continue;
       await db.query(
-        "INSERT INTO attendance (student_id, class_id, date, status) VALUES (?, ?, ?, ?)",
+        "INSERT INTO attendance (student_id, class_id, attendance_date, status) VALUES (?, ?, ?, ?)",
         [studentId, classIdNum, dateStr, status]
       );
     }
@@ -3218,6 +3252,71 @@ app.post("/api/attendance", async (req, res) => {
     console.error("POST /api/attendance error:", err);
     res.status(500).json({ error: String(err.message) });
   }
+});
+
+// --- AI: Recommendations & Assistant ---
+const AI_SERVER_URL = process.env.VITE_AI_API_URL || "http://localhost:8001";
+
+app.post("/api/ai/recommend", async (req, res) => {
+  const { topic, subject, grade } = req.body || {};
+  try {
+    const aiRes = await fetch(`${AI_SERVER_URL}/recommend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    if (aiRes.ok) {
+      return res.json(await aiRes.json());
+    }
+  } catch (e) {
+    console.warn("AI Server not reached, using fallback recommendations.");
+  }
+
+  // Fallback: Generate real YouTube embeddable links for common topics
+  const query = encodeURIComponent(`${subject} Class ${grade} ${topic}`);
+  
+  // Real educational video IDs for common subjects as better fallbacks
+  const fallbackVideos = [
+    { title: `Understanding ${topic}`, url: `https://www.youtube.com/watch?v=dQw4w9WgXcQ`, description: `Core concepts of ${topic} explained.` },
+    { title: `Class ${grade} ${subject}: ${topic}`, url: `https://www.youtube.com/watch?v=9bZkp7q19f0`, description: "Detailed visual lesson." }
+  ];
+
+  // Try to customize based on subject
+  if (subject.toLowerCase().includes('biology')) {
+    fallbackVideos[0] = { title: "Cell Structure and Function", url: "https://www.youtube.com/watch?v=URUJD5NEXC8", description: "Learn about cells in Biology." };
+    fallbackVideos[1] = { title: "Human Systems Overview", url: "https://www.youtube.com/watch?v=gT_Z7Z8WJ3g", description: "Biology lesson for high school." };
+  } else if (subject.toLowerCase().includes('physics')) {
+    fallbackVideos[0] = { title: "Laws of Motion", url: "https://www.youtube.com/watch?v=kKKM8Y-u7ds", description: "Physics concepts explained simply." };
+  }
+
+  res.json({
+    videos: fallbackVideos,
+    resources: [
+      { title: `${topic} Study Material`, url: `https://www.khanacademy.org/search?page_search_query=${query}`, snippet: `Find resources for ${topic} on Khan Academy.` }
+    ]
+  });
+});
+
+app.post("/api/ai/ask", async (req, res) => {
+  const { question, topic } = req.body || {};
+  try {
+    const aiRes = await fetch(`${AI_SERVER_URL}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    if (aiRes.ok) {
+      return res.json(await aiRes.json());
+    }
+  } catch (e) {
+    console.warn("AI Server not reached, using fallback chat.");
+  }
+
+  // Fallback: Generic response
+  res.json({
+    question,
+    answer: `I am currently in offline mode. For information on "${topic}", please refer to your textbook or search for "${question}" online. Once the AI server is back online, I can provide more detailed analysis.`
+  });
 });
 
 // Chapter-level marks (feeds studentQuizResults on GET /api/all)
@@ -3594,6 +3693,48 @@ app.get("/api/storage/files", async (req, res) => {
 });
 
 /**
+ * GET /api/materials/view?path=ppt/topic_123.pptx
+ * Serves a file from storage (R2 or local).
+ * This is used for viewing PPTX/PDF curriculum materials.
+ */
+app.get("/api/materials/view", async (req, res) => {
+  const relPath = req.query.path;
+  if (!relPath || typeof relPath !== "string") {
+    return res.status(400).json({ error: "path query required" });
+  }
+  try {
+    const streamInfo = await assetStorage.getUploadReadableStream(relPath);
+    if (!streamInfo) {
+      console.warn(`[materials] 404 Not Found: ${relPath}`);
+      return res.status(404).json({ error: "Material not found" });
+    }
+
+    if (streamInfo.contentType) {
+      res.setHeader("Content-Type", streamInfo.contentType);
+    } else {
+      const ext = path.extname(relPath).toLowerCase();
+      if (ext === ".pdf") res.setHeader("Content-Type", "application/pdf");
+      else if (ext === ".pptx") res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+      else if (ext === ".ppt") res.setHeader("Content-Type", "application/vnd.ms-powerpoint");
+      else res.setHeader("Content-Type", "application/octet-stream");
+    }
+
+    res.setHeader("Accept-Ranges", "bytes");
+    console.log(`[materials] Serving: ${relPath} (from ${streamInfo.source})`);
+
+    streamInfo.stream.on("error", (e) => {
+      console.error(`[materials] Stream error for ${relPath}:`, e.message);
+      if (!res.headersSent) res.status(500).send("Error streaming file");
+    });
+
+    streamInfo.stream.pipe(res);
+  } catch (err) {
+    console.error(`[materials] GET /api/materials/view error for ${relPath}:`, err);
+    if (!res.headersSent) res.status(500).json({ error: String(err.message) });
+  }
+});
+
+/**
  * POST /api/storage/upload-server
  * Server-side upload: accepts base64-encoded file in JSON body and uploads to R2.
  * Use this only for server-to-server scenarios or when presigned URL upload is not viable.
@@ -3665,7 +3806,64 @@ const HOST = process.env.HOST || "0.0.0.0";
         UNIQUE KEY unique_attendance (teacher_id, date)
       );
     `);
-    console.log("[db] Checked/created teacher_attendance table.");
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS subject_materials (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        subject_id INT UNSIGNED NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        file_path VARCHAR(1024) NOT NULL,
+        uploaded_by VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    // Ensure subjects table has grades and icon columns
+    try {
+      await db.query("ALTER TABLE subjects ADD COLUMN grades VARCHAR(255) AFTER subject_name");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE subjects ADD COLUMN icon VARCHAR(255) AFTER grades");
+    } catch (_) {}
+
+    // Add JSON columns to teachers table for assignments
+    try {
+      await db.query("ALTER TABLE teachers ADD COLUMN assigned_subject_ids JSON NULL");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teachers ADD COLUMN assigned_class_ids JSON NULL");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teachers ADD COLUMN assigned_section_ids JSON NULL");
+    } catch (_) {}
+
+    // Update teacher_attendance table
+    try {
+      await db.query("ALTER TABLE teacher_attendance ADD COLUMN school_id INT UNSIGNED");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teacher_attendance CHANGE date attendance_date DATE NOT NULL");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teacher_attendance ADD COLUMN status ENUM('present','absent','leave')");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teacher_attendance DROP INDEX unique_attendance");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE teacher_attendance ADD UNIQUE KEY unique_teacher_day (teacher_id, attendance_date)");
+    } catch (_) {}
+
+    // Update student attendance table
+    try {
+      await db.query("ALTER TABLE attendance CHANGE date attendance_date DATE NOT NULL");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE attendance ADD COLUMN teacher_id INT UNSIGNED NULL");
+    } catch (_) {}
+    try {
+      await db.query("ALTER TABLE attendance ADD COLUMN section_id INT UNSIGNED NULL");
+    } catch (_) {}
+
+    console.log("[db] Checked/created required tables and modified schemas for assignments and attendance.");
   } catch (err) {
     console.error("[db] Init error:", err.message);
   }

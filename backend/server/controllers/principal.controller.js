@@ -144,6 +144,7 @@ export async function getSchoolTeachers(req, res) {
   try {
     const [rows] = await db.query(`
       SELECT t.id, t.full_name, t.email, t.role,
+             t.assigned_subject_ids, t.assigned_class_ids, t.assigned_section_ids,
              GROUP_CONCAT(ts.subject_id SEPARATOR ',') as subject_ids
       FROM teachers t
       LEFT JOIN teacher_subjects ts ON ts.teacher_id = t.id
@@ -151,7 +152,58 @@ export async function getSchoolTeachers(req, res) {
       GROUP BY t.id
       ORDER BY t.id DESC
     `, [schoolId]);
-    res.json(rows);
+
+    // Fetch all subjects for name resolution
+    const [allSubjects] = await db.query("SELECT id, subject_name FROM subjects");
+    const subjectMap = {};
+    (allSubjects || []).forEach(s => { subjectMap[s.id] = s.subject_name; });
+
+    // Fetch all sections for class name resolution
+    const [allSections] = await db.query("SELECT id, grade_id, section_code FROM sections WHERE school_id = ?", [schoolId]);
+    const sectionMap = {};
+    (allSections || []).forEach(sec => { 
+      sectionMap[sec.id] = `Class ${sec.grade_id}-${sec.section_code}`; 
+    });
+
+    const teachers = rows.map(r => {
+      // Merge subjects from both sources
+      const subjectIdSet = new Set();
+      if (r.subject_ids) {
+        r.subject_ids.split(',').filter(Boolean).forEach(id => subjectIdSet.add(Number(id)));
+      }
+      let jsonSubjectIds = r.assigned_subject_ids;
+      if (typeof jsonSubjectIds === 'string') {
+        try { jsonSubjectIds = JSON.parse(jsonSubjectIds); } catch (_) { jsonSubjectIds = []; }
+      }
+      if (Array.isArray(jsonSubjectIds)) {
+        jsonSubjectIds.forEach(id => subjectIdSet.add(Number(id)));
+      }
+      const subjects = Array.from(subjectIdSet).map(id => subjectMap[id]).filter(Boolean);
+
+      // Resolve class names from assigned_section_ids (or assigned_class_ids)
+      let sectionIds = r.assigned_section_ids;
+      if (typeof sectionIds === 'string') {
+        try { sectionIds = JSON.parse(sectionIds); } catch (_) { sectionIds = []; }
+      }
+      if (!Array.isArray(sectionIds)) sectionIds = [];
+      
+      const classNames = sectionIds.map(id => sectionMap[id]).filter(Boolean);
+
+      return {
+        id: r.id,
+        full_name: r.full_name,
+        email: r.email,
+        role: r.role,
+        subject_ids: r.subject_ids,
+        assigned_subject_ids: jsonSubjectIds || [],
+        assigned_class_ids: r.assigned_class_ids || [],
+        assigned_section_ids: sectionIds || [],
+        subjects,
+        class_names: classNames
+      };
+    });
+
+    res.json(teachers);
   } catch (err) {
     console.error("GET /api/principals/teachers error:", err);
     res.status(500).json({ error: "Failed to fetch teachers" });
@@ -278,6 +330,53 @@ export async function getTeacherSubjects(req, res) {
   } catch (err) {
     console.error("GET /api/principal/teachers/:teacherId/subjects error:", err);
     res.status(500).json({ error: "Failed to fetch teacher subjects" });
+  }
+}
+
+// ── Teacher Subject/Class Assignment (JSON) ──
+export async function assignTeacherSubjectsAndClasses(req, res) {
+  const teacherId = Number(req.params.teacherId);
+  if (!teacherId) return res.status(400).json({ error: "teacherId required" });
+
+  const { assigned_subject_ids, assigned_class_ids, assigned_section_ids } = req.body;
+  const db = getPool();
+
+  try {
+    const updates = [];
+    const values = [];
+
+    if (assigned_subject_ids !== undefined) {
+      updates.push("assigned_subject_ids = ?");
+      values.push(JSON.stringify(assigned_subject_ids));
+    }
+    if (assigned_class_ids !== undefined) {
+      updates.push("assigned_class_ids = ?");
+      values.push(JSON.stringify(assigned_class_ids));
+    }
+    if (assigned_section_ids !== undefined) {
+      updates.push("assigned_section_ids = ?");
+      values.push(JSON.stringify(assigned_section_ids));
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: "No assignments provided to update" });
+    }
+
+    values.push(teacherId);
+
+    const [result] = await db.query(
+      `UPDATE teachers SET ${updates.join(", ")} WHERE id = ?`,
+      values
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Teacher not found" });
+    }
+
+    res.json({ ok: true, message: "Teacher assignments updated successfully" });
+  } catch (err) {
+    console.error("PUT /api/principal/teachers/:teacherId/assignments error:", err);
+    res.status(500).json({ error: "Failed to update teacher assignments" });
   }
 }
 
@@ -510,4 +609,140 @@ export async function deleteSection(req, res) {
     console.error("DELETE /api/principal/sections error:", err);
     res.status(500).json({ error: "Failed to delete section" });
   }
+}
+// ── Dashboard Overview APIs ──
+
+export async function getTeacherAttendanceSummary(req, res) {
+  const db = getPool();
+  const schoolId = Number(req.params.schoolId) || req.user?.school_id;
+  const date = req.query.date || new Date().toISOString().split('T')[0];
+
+  try {
+    // Only get regular teachers (exclude admins and principals from teacher attendance logs)
+    const [teachers] = await db.query(
+      "SELECT id, full_name, email FROM teachers WHERE school_id = ? AND role = 'teacher'", 
+      [schoolId]
+    );
+    
+    const [attendanceRows] = await db.query(
+      "SELECT teacher_id, status FROM teacher_attendance WHERE school_id = ? AND attendance_date = ?",
+      [schoolId, date]
+    );
+
+    const attendanceMap = {};
+    attendanceRows.forEach(row => {
+      attendanceMap[String(row.teacher_id)] = row.status;
+    });
+
+    const present = [], absent = [], leave = [], notMarked = [];
+    teachers.forEach(t => {
+      const status = attendanceMap[String(t.id)];
+      if (status === 'present') present.push(t);
+      else if (status === 'leave') leave.push(t);
+      else if (status === 'absent') absent.push(t);
+      else notMarked.push(t);
+    });
+
+    console.log(`Teacher Attendance Sync [${date}]: Total=${teachers.length}, P=${present.length}, A=${absent.length}, L=${leave.length}, NM=${notMarked.length}`);
+
+    res.json({
+      total_teachers: teachers.length,
+      present_today: present.length,
+      absent_today: absent.length,
+      leave_today: leave.length,
+      not_marked_today: notMarked.length,
+      present_list: present,
+      absent_list: absent,
+      leave_list: leave,
+      not_marked_list: notMarked,
+      date
+    });
+  } catch (err) {
+    console.error("GET teacher attendance summary error:", err);
+    res.status(500).json({ error: "Failed to fetch teacher attendance summary" });
+  }
+}
+
+export async function getStudentAttendanceSummary(req, res) {
+  const db = getPool();
+  const schoolId = Number(req.params.schoolId) || req.user?.school_id;
+  const date = req.query.date || new Date().toISOString().split('T')[0];
+
+  try {
+    // Get all students and their sections
+    const [students] = await db.query(`
+      SELECT s.id, s.first_name, s.last_name, s.roll_no, s.section_id, sec.section_code, sec.grade_id
+      FROM students s
+      JOIN sections sec ON s.section_id = sec.id
+      WHERE s.school_id = ?
+    `, [schoolId]);
+
+    // Get today's attendance
+    const [attendanceRows] = await db.query(`
+      SELECT a.student_id, a.status 
+      FROM attendance a
+      JOIN students s ON a.student_id = s.id
+      WHERE s.school_id = ? AND a.attendance_date = ?
+    `, [schoolId, date]);
+
+    const attendanceMap = {};
+    attendanceRows.forEach(row => {
+      attendanceMap[String(row.student_id)] = row.status;
+    });
+
+    const classBreakdown = {};
+    let totalPresent = 0;
+    let totalAbsent = 0;
+    let totalNotMarked = 0;
+
+    students.forEach(s => {
+      const className = `Class ${s.grade_id}-${s.section_code}`;
+      if (!classBreakdown[className]) {
+        classBreakdown[className] = { present: 0, absent: 0, not_marked: 0, students: [] };
+      }
+
+      const status = attendanceMap[String(s.id)];
+      if (status === 'present') {
+        totalPresent++;
+        classBreakdown[className].present++;
+      } else if (status === 'absent') {
+        totalAbsent++;
+        classBreakdown[className].absent++;
+      } else {
+        totalNotMarked++;
+        classBreakdown[className].not_marked++;
+      }
+
+      classBreakdown[className].students.push({
+        id: s.id,
+        name: `${s.first_name} ${s.last_name}`,
+        roll_no: s.roll_no,
+        status: status || 'not_marked'
+      });
+    });
+
+    res.json({
+      total_students: students.length,
+      present_today: totalPresent,
+      absent_today: totalAbsent,
+      not_marked_today: totalNotMarked,
+      class_breakdown: classBreakdown,
+      date
+    });
+  } catch (err) {
+    console.error("GET student attendance summary error:", err);
+    res.status(500).json({ error: "Failed to fetch student attendance summary" });
+  }
+}
+
+export async function getPrincipalOverview(req, res) {
+  const schoolId = Number(req.params.schoolId) || req.user?.school_id;
+  const date = req.query.date || new Date().toISOString().split('T')[0];
+  
+  res.json({
+    ok: true,
+    school_id: schoolId,
+    date,
+    message: "Overview endpoints are /teacher-attendance-summary and /student-attendance-summary"
+  });
 }
