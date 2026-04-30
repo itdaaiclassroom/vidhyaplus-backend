@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional, List
 
 import requests
+import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -205,32 +206,37 @@ print(f"[chatbot] 📋 Priority: 1=Ollama({_ollama_model}) → 2=RAG chunk → 3
 # Ollama helpers
 # ---------------------------------------------------------------------------
 
-def call_ollama(prompt: str, model: Optional[str] = None, max_tokens: int = 400) -> Optional[str]:
-    """Call Ollama. Returns None if offline or error."""
-    model = model or _ollama_model
+def call_ollama(prompt: str, max_tokens: int = 500) -> Optional[str]:
+    """Call local Ollama API."""
+    if not _ollama_model:
+        return None
     try:
-        resp = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"num_predict": max_tokens, "temperature": 0.7, "top_p": 0.9},
-            },
-            timeout=60,
-        )
-        if resp.status_code == 200:
-            result = resp.json().get("response", "")
-            return result.strip() if result else None
-    except Exception:
-        pass
+        # Increased timeout to 120s for VPS performance
+        with httpx.Client(timeout=120.0) as client:
+            resp = client.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": _ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"num_predict": max_tokens}
+                }
+            )
+            if resp.status_code == 200:
+                result = resp.json().get("response", "")
+                return result.strip() if result else None
+            else:
+                print(f"[ollama] Error: {resp.status_code} - {resp.text}")
+    except Exception as e:
+        print(f"[ollama] Connection failed: {e}")
     return None
 
 
 def ollama_available() -> bool:
     """Quick reachability check."""
     try:
-        r = requests.get("http://localhost:11434/api/tags", timeout=3)
+        # 5s timeout for VPS
+        r = requests.get("http://localhost:11434/api/tags", timeout=5)
         return r.status_code == 200
     except Exception:
         return False
@@ -648,11 +654,7 @@ def generate_quiz(body: GenerateQuizBody):
     **LLM Priority:**
     1. Ollama (mistral) — best quality, formatted MCQs
     2. RAG template-based — extracts real facts from indexed PDF chunks (no LLM needed)
-    3. Placeholder — only if no documents indexed at all
-
-    Returns:
-    - `questions`: list of MCQ objects
-    - `model_used`: which method was used
+    3. HTTP 422 — if no documents are indexed at all
     """
     from fastapi import HTTPException
 
@@ -661,13 +663,19 @@ def generate_quiz(body: GenerateQuizBody):
     grade   = body.grade or 10
     count   = max(1, min(body.count, 20))
 
-    query     = f"{subject} class {grade} {topic}"
+    print(f"[quiz] Request: topic={topic!r} subject={subject!r} grade={grade} count={count}")
+
+    query           = f"{subject} class {grade} {topic}"
     retrieved_pairs = document_registry.retrieve_chunks(query, k=max(count * 2, 10))
-    chunks    = [chunk for chunk, _ in retrieved_pairs]
-    context   = "\n\n".join(chunks[:5])[:2500] if chunks else ""
+    chunks          = [chunk for chunk, _ in retrieved_pairs]
+    context         = "\n\n".join(chunks[:5])[:2500] if chunks else ""
+    print(f"[quiz] RAG: {len(chunks)} chunks retrieved for query={query!r}")
 
     # ── 1. Ollama (best quality) ───────────────────────────────────────────
-    if ollama_available():
+    _ollama_up = ollama_available()
+    print(f"[quiz] ollama_available() = {_ollama_up}")
+
+    if _ollama_up:
         prompt = f"""Generate exactly {count} multiple-choice questions (MCQ) for Class {grade} topic: {topic} ({subject}).
 Use the context below. Each question MUST have exactly 4 options (A, B, C, D) and one correct answer.
 
@@ -690,24 +698,35 @@ Context:
 
 Generate {count} questions now:"""
 
+        print(f"[quiz] Calling Ollama (model={_ollama_model}, max_tokens={min(2500, count * 150)})...")
         ollama_raw = call_ollama(prompt, max_tokens=min(2500, count * 150))
+
         if ollama_raw:
+            print(f"[quiz] Ollama responded: {len(ollama_raw)} chars. Parsing MCQs...")
             out = _parse_mcqs(ollama_raw, count)
-            if len(out) >= max(1, count // 2):
-                # Pad with RAG-based if Ollama returned fewer than requested
+            print(f"[quiz] Parsed {len(out)} MCQs from Ollama response.")
+
+            if out:
+                # ✅ Got at least 1 valid MCQ from Ollama → use it, pad with RAG if needed
                 if len(out) < count and chunks:
                     extras = _rag_quiz_fallback(topic, subject, grade, count - len(out), chunks)
+                    print(f"[quiz] Padded with {len(extras)} RAG questions.")
                     out += extras
                 return {"questions": out[:count], "model_used": "ollama"}
+            else:
+                # Ollama responded but we couldn't parse any MCQs — return raw for debugging
+                print(f"[quiz] ⚠️  Ollama response could not be parsed into MCQs.")
+                print(f"[quiz] Raw Ollama output (first 500 chars): {ollama_raw[:500]}")
+        else:
+            print(f"[quiz] ⚠️  Ollama returned None (timeout or model error).")
 
     # ── 2. RAG template-based (no LLM needed, works offline) ──────────────
+    print(f"[quiz] Falling back to RAG template (chunks={len(chunks)}).")
     if chunks:
         out = _rag_quiz_fallback(topic, subject, grade, count, chunks)
         if out:
-            # Pad to requested count if needed (repeat with shuffled options)
             import random
             while len(out) < count:
-                # Pick a random existing question and tweak it
                 base = dict(random.choice(out))
                 base["question_text"] = base["question_text"].replace("TRUE", "CORRECT") \
                                                               .replace("Fill in", "Complete")
@@ -715,17 +734,17 @@ Generate {count} questions now:"""
             return {
                 "questions": out[:count],
                 "model_used": "rag_template",
-                "note": "Generated from indexed PDF content without LLM. Start Ollama for better quality: ollama serve && ollama pull mistral",
+                "note": "Ollama was not available or could not generate MCQs. Check server logs for details. Run: ollama serve && ollama pull mistral",
             }
 
-    # ── 3. No content at all — tell the user to ingest documents first ─────
+    # ── 3. No content at all ────────────────────────────────────────────────
     raise HTTPException(
         status_code=422,
         detail=(
             f"No documents indexed for topic '{topic}'. "
-            "Please ingest a PDF or URL first via POST /ingest, "
-            "then try generating the quiz again."
+            "Please ingest a PDF or URL first via POST /ingest."
         ),
     )
+
 
 
