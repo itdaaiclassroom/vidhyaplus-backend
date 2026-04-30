@@ -185,24 +185,24 @@ def search_youtube(query: str) -> list:
 
 _PROMINENT_RESOURCES = [
     {
-        "title": "DIKSHA – Government Learning Portal",
-        "url": "https://diksha.gov.in/",
-        "snippet": "Official learning resources by class and subject.",
+        "title": "SCERT Telangana Official Textbooks",
+        "url": "https://scert.telangana.gov.in/",
+        "snippet": "Download official Telangana State Board (SSC) textbooks.",
     },
     {
-        "title": "NCERT Official Textbooks (Free PDF)",
-        "url": "https://ncert.nic.in/textbook.php",
-        "snippet": "Download chapter-wise PDFs for all subjects.",
+        "title": "DIKSHA Telangana Portal",
+        "url": "https://diksha.gov.in/tg/",
+        "snippet": "Official digital learning resources for Telangana State students.",
     },
     {
-        "title": "ePathshala – NCERT Digital Resources",
-        "url": "https://epathshala.nic.in/",
-        "snippet": "E-books and digital resources for school education.",
+        "title": "T-SAT Network (Vidya & Nipuna)",
+        "url": "https://tsat.tv/",
+        "snippet": "Telangana State government educational TV channel with video lessons.",
     },
     {
-        "title": "NROER – Open Educational Resources",
-        "url": "https://nroer.gov.in/home/",
-        "snippet": "National Repository of Open Educational Resources.",
+        "title": "Telangana State Board of Secondary Education",
+        "url": "https://bse.telangana.gov.in/",
+        "snippet": "Official SSC board updates, syllabus, and examination materials.",
     },
 ]
 
