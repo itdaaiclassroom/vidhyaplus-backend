@@ -2450,7 +2450,7 @@ app.post("/api/live-quiz/:id/scan", async (req, res) => {
       liveQuizCheckpoint("POST /api/live-quiz/:id/scan:reject", { reason: "invalid_qr_format", raw: raw.slice(0, 32) });
       return res.status(400).json({ error: "Invalid QR format. Expected <ROLL_NUMBER>_<A|B|C|D>" });
     }
-    const rollNo = Number(m[1]);
+    const rollNo = m[1]; // Keep as string to match VARCHAR(24) and preserve leading zeros
     const selectedOption = m[2];
     const [sessionRows] = await db.query("SELECT id, class_id, status FROM live_quiz_sessions WHERE id = ? LIMIT 1", [sessionId]);
     const session = Array.isArray(sessionRows) && sessionRows[0] ? sessionRows[0] : null;
@@ -2463,12 +2463,17 @@ app.post("/api/live-quiz/:id/scan", async (req, res) => {
     const qIndex = qNo - 1;
     const question = Array.isArray(questionRows) && questionRows[qIndex] ? questionRows[qIndex] : null;
     if (!question) return res.status(400).json({ error: `Question ${qNo} not found in this session` });
+    
+    // Explicitly use string comparison for roll_no
     const [studentRows] = await db.query(
       "SELECT id, first_name, last_name FROM students WHERE section_id = ? AND roll_no = ? LIMIT 1",
       [Number(session.class_id), rollNo]
     );
     const student = Array.isArray(studentRows) && studentRows[0] ? studentRows[0] : null;
-    if (!student) return res.status(404).json({ error: "Student not found for this class and roll number" });
+    if (!student) {
+      console.log(`[SCAN_REJECT] Student not found for Roll: ${rollNo}, Class: ${session.class_id}`);
+      return res.status(404).json({ error: "Student not found for this class and roll number" });
+    }
     const [liveSessionLinkRows] = await db.query("SELECT live_session_id FROM live_quiz_sessions WHERE id = ? LIMIT 1", [sessionId]);
     const liveSessionId = Array.isArray(liveSessionLinkRows) && liveSessionLinkRows[0] && liveSessionLinkRows[0].live_session_id != null
       ? Number(liveSessionLinkRows[0].live_session_id)
@@ -2486,6 +2491,7 @@ app.post("/api/live-quiz/:id/scan", async (req, res) => {
       [Number(session.class_id), Number(student.id), attendanceDate]
     );
     if (!Array.isArray(attRows) || !attRows[0]) {
+      console.log(`[SCAN_REJECT] No attendance record for StudentID: ${student.id} on ${attendanceDate}`);
       liveQuizCheckpoint("POST /api/live-quiz/:id/scan:reject", {
         reason: "no_attendance_row",
         classId: Number(session.class_id),
@@ -2496,6 +2502,7 @@ app.post("/api/live-quiz/:id/scan", async (req, res) => {
       return res.status(400).json({ error: "Attendance not found for student on this session date" });
     }
     if (String(attRows[0].status || "").toLowerCase() !== "present") {
+      console.log(`[SCAN_REJECT] Student ${student.id} is marked ${attRows[0].status} (not present) on ${attendanceDate}`);
       liveQuizCheckpoint("POST /api/live-quiz/:id/scan:reject", { reason: "student_absent", studentId: Number(student.id), attendanceDate });
       return res.status(400).json({ error: "Student is absent and not eligible for quiz today" });
     }
@@ -2678,10 +2685,28 @@ app.get("/live-quiz-scan", (req, res) => {
       body { font-family: Arial, sans-serif; margin: 0; padding: 16px; background: #f7fafc; color: #111827; }
       .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
       input, button { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #d1d5db; font-size: 14px; box-sizing: border-box; }
-      button { background: #0f766e; color: #fff; border: 0; margin-top: 10px; }
+      button { background: #0f766e; color: #fff; border: 0; margin-top: 10px; font-weight: bold; }
       .muted { color: #6b7280; font-size: 12px; }
-      .ok { color: #166534; font-size: 13px; margin-top: 6px; }
-      .err { color: #b91c1c; font-size: 13px; margin-top: 6px; }
+      .ok { color: #166534; font-size: 13px; margin-top: 6px; font-weight: bold; }
+      .err { color: #b91c1c; font-size: 13px; margin-top: 6px; font-weight: bold; }
+      .video-container { position: relative; width: 100%; margin-top: 10px; border-radius: 8px; overflow: hidden; background: #000; }
+      #video { width: 100%; display: block; }
+      .scanner-line {
+        position: absolute; top: 0; left: 0; width: 100%; height: 2px; background: #ef4444;
+        box-shadow: 0 0 8px #ef4444; animation: scan 2s linear infinite; z-index: 10;
+      }
+      @keyframes scan { 0% { top: 0%; } 50% { top: 100%; } 100% { top: 0%; } }
+      .flash {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: #fff; opacity: 0; z-index: 20; pointer-events: none;
+      }
+      .flash.active { animation: flash-anim 0.2s ease-out; }
+      @keyframes flash-anim { 0% { opacity: 0.8; } 100% { opacity: 0; } }
+      #lastResult {
+        background: #ecfdf5; border: 1px solid #10b981; color: #065f46;
+        padding: 8px; border-radius: 6px; font-size: 14px; font-weight: bold;
+        text-align: center; margin-top: 10px; display: none;
+      }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
   </head>
@@ -2694,7 +2719,12 @@ app.get("/live-quiz-scan", (req, res) => {
     <div class="card">
       <b>Camera QR Capture</b>
       <div class="muted">Tap Start Camera, then scan student answer QR directly.</div>
-      <video id="video" style="width:100%; border-radius:8px; background:#000; margin-top:10px;" playsinline></video>
+      <div class="video-container">
+        <video id="video" playsinline></video>
+        <div id="scannerLine" class="scanner-line" style="display:none;"></div>
+        <div id="flashOverlay" class="flash"></div>
+      </div>
+      <div id="lastResult"></div>
       <button id="startCamBtn">Start camera</button>
       <button id="stopCamBtn" style="background:#6b7280;">Stop camera</button>
     </div>
@@ -2861,11 +2891,13 @@ app.get("/live-quiz-scan", (req, res) => {
         if (cameraRunning) return;
         const video = document.getElementById("video");
         if (!video) return;
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+
+        if (!window.isSecureContext && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
           msgEl.className = "err";
-          msgEl.textContent = "Camera access failed. Note: Mobile browsers REQUIRE an HTTPS connection for camera access. Try using ngrok for a secure tunnel.";
+          msgEl.innerHTML = "<b>Security Error:</b> Camera requires HTTPS. Use ngrok.";
           return;
         }
+
         cameraRunning = true;
         try {
           cameraStream = await navigator.mediaDevices.getUserMedia({
@@ -2899,7 +2931,7 @@ app.get("/live-quiz-scan", (req, res) => {
               ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
               const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
               const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                inversionAttempts: "dontInvert",
+                inversionAttempts: "attemptBoth",
               });
 
               if (code && code.data) {
@@ -2908,11 +2940,25 @@ app.get("/live-quiz-scan", (req, res) => {
                 if (raw && (raw !== lastAutoRaw || (now - lastAutoAt) > 1500)) {
                   lastAutoRaw = raw;
                   lastAutoAt = now;
+                  
+                  // Flash feedback
+                  const flash = document.getElementById("flashOverlay");
+                  flash.classList.remove("active");
+                  void flash.offsetWidth; // trigger reflow
+                  flash.classList.add("active");
+
                   const parsed = parseStudentQr(raw);
                   if (parsed) {
                     try {
                       await bufferQr(qnoValue(), raw);
                       document.getElementById("qr").value = "";
+                      
+                      const lr = document.getElementById("lastResult");
+                      lr.style.display = "block";
+                      lr.textContent = "Last Scanned: " + parsed.rollNo + " (" + parsed.selectedOption + ")";
+                      
+                      msgEl.className = "ok";
+                      msgEl.textContent = "Captured " + parsed.rollNo;
                     } catch (e) {
                       msgEl.className = "muted";
                       msgEl.textContent = e && e.message ? e.message : "Scan ignored";
@@ -2935,6 +2981,7 @@ app.get("/live-quiz-scan", (req, res) => {
 
       function stopCamera() {
         cameraRunning = false;
+        document.getElementById("scannerLine").style.display = "none";
         try {
           if (cameraStream) cameraStream.getTracks().forEach((t) => t.stop());
         } catch (_) {}
