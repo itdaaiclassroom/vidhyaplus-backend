@@ -325,25 +325,23 @@ async function getQuizAttendanceDate(db, classId, liveSessionId, fallbackDate) {
   const cid = Number(classId);
   if (!cid) return fb;
   try {
-    // 1) Prefer today's attendance for this class (dynamic, based on attendance table).
     const now = new Date();
     const todayLocal = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    // Use attendance_date as unified column name
     const [todayRows] = await db.query(
-      "SELECT date FROM attendance WHERE class_id = ? AND date = ? ORDER BY id DESC LIMIT 1",
+      "SELECT attendance_date FROM attendance WHERE class_id = ? AND attendance_date = ? ORDER BY id DESC LIMIT 1",
       [cid, todayLocal]
     );
-    const todayAttendance = todayRows && todayRows[0] && todayRows[0].date ? toDateKey(todayRows[0].date) : null;
+    const todayAttendance = todayRows && todayRows[0] && todayRows[0].attendance_date ? toDateKey(todayRows[0].attendance_date) : null;
     if (todayAttendance) return todayAttendance;
 
-    // 2) Else use the latest submitted attendance date for this class.
     const [latestRows] = await db.query(
-      "SELECT date FROM attendance WHERE class_id = ? ORDER BY date DESC, id DESC LIMIT 1",
+      "SELECT attendance_date FROM attendance WHERE class_id = ? ORDER BY attendance_date DESC, id DESC LIMIT 1",
       [cid]
     );
-    const latestAttendance = latestRows && latestRows[0] && latestRows[0].date ? toDateKey(latestRows[0].date) : null;
+    const latestAttendance = latestRows && latestRows[0] && latestRows[0].attendance_date ? toDateKey(latestRows[0].attendance_date) : null;
     if (latestAttendance) return latestAttendance;
 
-    // 3) Else fallback to linked live session date.
     if (liveSessionId) {
       const [rows] = await db.query("SELECT session_date FROM live_sessions WHERE id = ? LIMIT 1", [Number(liveSessionId)]);
       const r = rows && rows[0] ? rows[0] : null;
@@ -351,7 +349,8 @@ async function getQuizAttendanceDate(db, classId, liveSessionId, fallbackDate) {
       if (sessionDate) return sessionDate;
     }
     return fb;
-  } catch (_) {
+  } catch (err) {
+    console.error("getQuizAttendanceDate error:", err.message);
     return fb;
   }
 }
@@ -2580,7 +2579,7 @@ app.post("/api/live-quiz/:id/submit-bulk", async (req, res) => {
       sessionDate
     );
     const [presentRows] = await db.query(
-      "SELECT student_id FROM attendance WHERE class_id = ? AND date = ? AND status = 'present'",
+      "SELECT student_id FROM attendance WHERE class_id = ? AND attendance_date = ? AND status = 'present'",
       [Number(session.class_id), attendanceDate]
     );
     const presentSet = new Set((presentRows || []).map((r) => Number(r.student_id)));
@@ -2709,6 +2708,9 @@ app.get("/live-quiz-scan", (req, res) => {
       <button id="nextBtn" style="background:#2563eb;">Next question</button>
       <button id="finalBtn" style="background:#059669;">Submit all answers to server</button>
       <div id="msg" class="muted"></div>
+    <div id="httpsWarning" style="display:none; background:#fee2e2; color:#b91c1c; padding:10px; border-radius:8px; font-size:12px; margin-top:10px; border:1px solid #fecaca;">
+      <b>Important:</b> Camera scanning requires a secure (HTTPS) connection. If you are testing on a local network, please use a tunnel (like ngrok) or ensure you are accessing via HTTPS.
+    </div>
     </div>
     <script>
       function lqCheckpoint(name, data) {
@@ -2876,6 +2878,7 @@ app.get("/live-quiz-scan", (req, res) => {
           cameraRunning = false;
           msgEl.className = "err";
           msgEl.textContent = "Camera permission denied or not available. (Check if site is HTTPS)";
+          document.getElementById("httpsWarning").style.display = "block";
           return;
         }
 
@@ -3017,7 +3020,7 @@ app.get("/api/live-quiz/:id/leaderboard", async (req, res) => {
   if (!sessionId) return res.status(400).json({ error: "id required" });
   try {
     const [rows] = await db.query(
-      "SELECT student_id, SUM(is_correct) AS score FROM live_quiz_answers WHERE live_quiz_session_id = ? GROUP BY student_id ORDER BY score DESC LIMIT 5",
+      "SELECT student_id, SUM(is_correct) AS score FROM live_quiz_answers WHERE live_quiz_session_id = ? GROUP BY student_id ORDER BY score DESC LIMIT 20",
       [sessionId]
     );
     const studentIds = (rows || []).map((r) => r.student_id).filter(Boolean);
