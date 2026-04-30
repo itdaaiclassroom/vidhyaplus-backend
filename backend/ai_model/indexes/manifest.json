@@ -1,26 +1,18 @@
 [
   {
+    "id": "2b4aa6aa",
+    "label": "biology class 10",
+    "source_type": "url",
+    "source_url": "https://scert.telangana.gov.in/pdf/publication/ebooks2019/x%20biology%20em%202025-26.pdf",
+    "chunk_count": 1267,
+    "created_at": "2026-04-30T05:49:15.543230Z"
+  },
+  {
     "id": "legacy_0",
     "label": "Syllabus (Legacy)",
     "source_type": "pdf",
     "source_url": "",
     "chunk_count": 1139,
-    "created_at": "2026-04-29T19:01:18.662142Z"
-  },
-  {
-    "id": "6805c081",
-    "label": "Science Class 8",
-    "source_type": "pdf",
-    "source_url": "",
-    "chunk_count": 1139,
-    "created_at": "2026-04-29T19:06:56.476668Z"
-  },
-  {
-    "id": "ec08649f",
-    "label": "Biology class 8",
-    "source_type": "url",
-    "source_url": "https://pub-de88fb6193f64c7ca276242b4aa5ab89.r2.dev/subject_materials/sub6_1777466133939.pdf",
-    "chunk_count": 1267,
-    "created_at": "2026-04-29T19:14:23.114923Z"
+    "created_at": "2026-04-30T05:55:42.958185Z"
   }
 ]
