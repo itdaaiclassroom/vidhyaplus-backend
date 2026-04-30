@@ -65,14 +65,19 @@ def _get_pdf_reader(path_or_url: str) -> PdfReader:
         try:
             # Using httpx with a realistic User-Agent to avoid bot blocking on VPS
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-            response = httpx.get(path_or_url, headers=headers, follow_redirects=True, timeout=60.0)
+            # verify=False is CRITICAL for government websites (scert.telangana.gov.in) which often have invalid SSL certs
+            response = httpx.get(path_or_url, headers=headers, follow_redirects=True, timeout=60.0, verify=False)
             if response.status_code != 200:
+                print(f"[segmentation] URL fetch failed with HTTP {response.status_code} for {path_or_url}")
                 raise HTTPException(
                     status_code=400, 
                     detail=f"Cloudflare R2/S3 Download Error: HTTP {response.status_code} for {path_or_url}"
                 )
             return PdfReader(io.BytesIO(response.content))
+        except HTTPException:
+            raise
         except Exception as e:
+            print(f"[segmentation] Exception fetching URL {path_or_url}: {str(e)}")
             raise HTTPException(status_code=400, detail=f"Failed to fetch PDF from URL: {str(e)}")
     else:
         # Local file check
