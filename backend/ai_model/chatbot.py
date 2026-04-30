@@ -210,6 +210,7 @@ def call_ollama(prompt: str, max_tokens: int = 500) -> Optional[str]:
     """
     Call local Ollama API with automatic retry logic.
     Retries once on failure to handle transient VPS load.
+    Uses 'requests' for maximum compatibility with VPS networking.
     """
     if not _ollama_model:
         return None
@@ -217,25 +218,25 @@ def call_ollama(prompt: str, max_tokens: int = 500) -> Optional[str]:
     for attempt in [1, 2]:
         try:
             # 120s timeout for VPS performance
-            with httpx.Client(timeout=120.0) as client:
-                resp = client.post(
-                    "http://127.0.0.1:11434/api/generate",
-                    json={
-                        "model": _ollama_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {
+            resp = requests.post(
+                "http://127.0.0.1:11434/api/generate",
+                json={
+                    "model": _ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
                         "num_predict": max_tokens,
-                        "temperature": 0.2,  # Lower temperature = more strict following of format
+                        "temperature": 0.2,
                         "top_p": 0.9
                     }
-                    }
-                )
-                if resp.status_code == 200:
-                    result = resp.json().get("response", "")
-                    return result.strip() if result else None
-                else:
-                    print(f"[ollama] Attempt {attempt} Error: {resp.status_code}")
+                },
+                timeout=120.0
+            )
+            if resp.status_code == 200:
+                result = resp.json().get("response", "")
+                return result.strip() if result else None
+            else:
+                print(f"[ollama] Attempt {attempt} Error: {resp.status_code}")
         except Exception as e:
             print(f"[ollama] Attempt {attempt} failed: {e}")
         
