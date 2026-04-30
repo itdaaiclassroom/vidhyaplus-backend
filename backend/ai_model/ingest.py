@@ -100,8 +100,15 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
 def _extract_url_text(url: str) -> tuple[str, str]:
     """Download PDF or scrape HTML from URL. Returns (text, detected_label)."""
     import httpx
-    headers = {"User-Agent": "Mozilla/5.0 (VidhyaPlus AI Teacher)"}
-    resp = httpx.get(url, headers=headers, follow_redirects=True, timeout=60)
+    # Full browser spoofing + massive 5-minute timeout for slow Indian govt servers
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Referer": "https://www.google.com/"
+    }
+    # verify=False handles invalid SSL certs on government websites
+    resp = httpx.get(url, headers=headers, follow_redirects=True, timeout=300.0, verify=False)
     resp.raise_for_status()
     ct = resp.headers.get("content-type", "")
     if "pdf" in ct or url.lower().endswith(".pdf"):

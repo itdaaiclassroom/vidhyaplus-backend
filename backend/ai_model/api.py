@@ -64,3 +64,23 @@ def health():
         "doc_count": document_registry.doc_count,
         "ollama_available": ollama_available(),
     }
+
+
+@app.get("/ollama-status")
+def check_ollama():
+    """
+    Detailed Ollama check — use this on VPS to verify Ollama is active
+    and the correct model is installed before deploying.
+    """
+    from chatbot import ollama_status
+    status = ollama_status()
+    return {
+        "primary_llm": "Ollama (mistral)",
+        "fallback_llm": "distilgpt2",
+        "ollama": status,
+        "tip": (
+            "Ollama is running correctly! AI will use Ollama for best quality answers."
+            if status["running"] and status["model_installed"]
+            else "Run 'ollama serve' to start Ollama, then 'ollama pull mistral' to install the model."
+        ),
+    }
