@@ -20,6 +20,8 @@ import pickle
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+router = APIRouter(tags=["chatbot"])
+
 
 _HERE = Path(__file__).resolve().parent
 INDEXES_DIR = _HERE / "indexes"
@@ -328,6 +330,29 @@ Teacher's answer:"""
         "I'm sorry, I couldn't find a clear answer right now. Please check your textbook or ask your teacher. 📚",
         source_labels,
     )
+
+
+class AskBody(BaseModel):
+    question: str
+    topic: Optional[str] = None
+    subject: Optional[str] = None
+    chapter: Optional[str] = None
+
+
+@router.post("/ask")
+def ask(body: AskBody):
+    """Q&A endpoint: uses RAG to answer from ingested syllabus docs."""
+    answer, sources = generate_answer(
+        body.question,
+        topic=body.topic,
+        subject=body.subject,
+        chapter=body.chapter
+    )
+    return {
+        "answer": answer,
+        "source_docs": sources,
+        "model_used": "ollama" if ollama_available() else "fallback"
+    }
 
 
 # ---------------------------------------------------------------------------
