@@ -100,7 +100,7 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
 def _extract_url_text(url: str) -> tuple[str, str]:
     """Download PDF or scrape HTML from URL. Returns (text, detected_label)."""
     import httpx
-    headers = {"User-Agent": "Mozilla/5.0 (VidhyaPlus AI Teacher)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     resp = httpx.get(url, headers=headers, follow_redirects=True, timeout=60)
     resp.raise_for_status()
     ct = resp.headers.get("content-type", "")
