@@ -63,8 +63,9 @@ def _get_pdf_reader(path_or_url: str) -> PdfReader:
     """
     if path_or_url.startswith(("http://", "https://")):
         try:
-            # Using httpx to download the PDF into memory
-            response = httpx.get(path_or_url, follow_redirects=True, timeout=30.0)
+            # Using httpx with a realistic User-Agent to avoid bot blocking on VPS
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            response = httpx.get(path_or_url, headers=headers, follow_redirects=True, timeout=60.0)
             if response.status_code != 200:
                 raise HTTPException(
                     status_code=400, 
