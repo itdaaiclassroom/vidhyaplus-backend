@@ -1,12 +1,13 @@
 import express from "express";
 import { createTeacher, updateTeacher, deleteTeacher, bulkCreateTeachers, getTeacherDashboard, markTeacherAttendance, getTeacherAttendance, getTeacherAssignments, markSelfAttendance, getTodayAttendance } from "../controllers/teacher.controller.js";
+import { getSchoolStudents } from "../controllers/principal.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
 router.post("/attendance", authenticateJWT, authorizeRole(["admin", "principal"]), markTeacherAttendance);
 router.get("/attendance", authenticateJWT, authorizeRole(["admin", "principal"]), getTeacherAttendance);
-router.get("/:schoolId/students", authenticateJWT, authorizeRole(["teacher", "principal", "admin"]), getSchoolStudentsbyteachers);
+router.get("/:schoolId/students", authenticateJWT, authorizeRole(["teacher", "principal", "admin"]), getSchoolStudents);
 router.post("/", authenticateJWT, authorizeRole(["admin", "principal"]), createTeacher);
 router.post("/bulk", authenticateJWT, authorizeRole(["admin", "principal"]), bulkCreateTeachers);
 router.get("/dashboard/:id", authenticateJWT, getTeacherDashboard);

@@ -2054,12 +2054,15 @@ app.post("/recommend", async (_req, res) => {
   return res.json({ videos: [], resources: [], disabled: true });
 });
 
+
+
 app.post("/api/live-quiz", async (req, res) => {
   const db = getPool();
-  const { teacherId, classId, chapterId, topicId, topicName, subjectId, liveSessionId } = req.body || {};
+  const { teacherId, classId, chapterId, topicId, topicName, subjectId, liveSessionId, noOfQuestions } = req.body || {};
   if (!teacherId || !classId || !chapterId || !topicId || !topicName || !subjectId) {
     return res.status(400).json({ error: "teacherId, classId, chapterId, topicId, topicName, subjectId are required" });
   }
+  const numQuestionsToCreate = noOfQuestions ? Math.min(Math.max(Number(noOfQuestions), 1), 30) : 10;
   try {
     liveQuizCheckpoint("POST /api/live-quiz:request", { teacherId, classId, subjectId, topicId, liveSessionId });
     const liveSessionIdNum = liveSessionId != null ? Number(liveSessionId) : null;
@@ -2105,8 +2108,8 @@ app.post("/api/live-quiz", async (req, res) => {
 
     const subjectRow = await db.query("SELECT name FROM subjects WHERE id = ?", [Number(subjectId)]).then(([r]) => r && r[0]).catch(() => null);
     const subjectName = subjectRow ? subjectRow.name : "Subject";
-    const questions = await fetchQuizQuestions(topicName, subjectName, 10, { topicId, chapterId, subjectId });
-    const fallbackQuestions = Array.from({ length: 10 }).map((_, i) => ({
+    const questions = await fetchQuizQuestions(topicName, subjectName, numQuestionsToCreate, { topicId, chapterId, subjectId });
+    const fallbackQuestions = Array.from({ length: numQuestionsToCreate }).map((_, i) => ({
       question_text: `Question ${i + 1}: ${String(topicName)} (generated fallback)`,
       option_a: "A",
       option_b: "B",
@@ -2115,15 +2118,14 @@ app.post("/api/live-quiz", async (req, res) => {
       correct_option: "A",
       explanation: "",
     }));
-    const questionsToCreate = questions.length >= 10
-      ? questions.slice(0, 10)
-      : (ALLOW_PLACEHOLDER_QUIZ ? [...questions, ...fallbackQuestions].slice(0, 10) : questions.slice(0, 10));
-    if (questionsToCreate.length < 10) {
+    const questionsToCreate = questions.length >= numQuestionsToCreate
+      ? questions.slice(0, numQuestionsToCreate)
+      : (ALLOW_PLACEHOLDER_QUIZ ? [...questions, ...fallbackQuestions].slice(0, numQuestionsToCreate) : questions.slice(0, numQuestionsToCreate));
+    if (questionsToCreate.length < numQuestionsToCreate && !ALLOW_PLACEHOLDER_QUIZ) {
       return res.status(503).json({
         error: "Unable to prepare a full quiz set right now. Please retry.",
       });
     }
-    const numQuestionsToCreate = 10;
     let sessionId;
     if (liveSessionIdNum != null) {
       try {
@@ -2330,7 +2332,7 @@ app.get("/api/live-quiz/:id/status", async (req, res) => {
     }
     const attendanceDate = await getQuizAttendanceDate(db, classId, liveSessionId, sessionDate || new Date().toISOString().slice(0, 10));
     const [presentRows] = await db.query(
-      "SELECT COUNT(*) AS c FROM attendance WHERE class_id = ? AND date = ? AND status = 'present'",
+      "SELECT COUNT(*) AS c FROM attendance WHERE class_id = ? AND attendance_date = ? AND status = 'present'",
       [classId, attendanceDate]
     );
     const presentCount = Number(presentRows?.[0]?.c || 0);
@@ -2481,7 +2483,7 @@ app.post("/api/live-quiz/:id/scan", async (req, res) => {
     }
     const attendanceDate = await getQuizAttendanceDate(db, Number(session.class_id), liveSessionId, sessionDate);
     const [attRows] = await db.query(
-      "SELECT status FROM attendance WHERE class_id = ? AND student_id = ? AND date = ? LIMIT 1",
+      "SELECT status FROM attendance WHERE class_id = ? AND student_id = ? AND attendance_date = ? LIMIT 1",
       [Number(session.class_id), Number(student.id), attendanceDate]
     );
     if (!Array.isArray(attRows) || !attRows[0]) {
@@ -3184,6 +3186,15 @@ app.put("/api/live-session/:id/end", async (req, res) => {
   if (!id) return res.status(400).json({ error: "session id required" });
   try {
     liveQuizCheckpoint("PUT /api/live-session/:id/end", { liveSessionId: id });
+
+    // Mark the associated topic as completed
+    const [sessionRows] = await db.query("SELECT topic_id FROM live_sessions WHERE id = ?", [id]);
+    const topicId = sessionRows && sessionRows[0] ? sessionRows[0].topic_id : null;
+    if (topicId) {
+      await db.query("UPDATE topics SET status = 'completed' WHERE id = ?", [topicId]);
+      liveQuizCheckpoint("PUT /api/live-session/:id/end:topic_completed", { topicId });
+    }
+
     await db.query(
       `UPDATE live_sessions SET status = 'ended', attendance_marked = 1, quiz_submitted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [id]

@@ -7,7 +7,10 @@ export async function getPrincipalProfile(req, res) {
   const principalId = req.user.id;
   try {
     const [rows] = await db.query(
-      "SELECT id, email, full_name, school_id, role FROM teachers WHERE id = ? AND role = 'principal' LIMIT 1",
+      `SELECT t.id, t.email, t.full_name, t.school_id, t.role, s.school_name 
+       FROM teachers t
+       LEFT JOIN schools s ON t.school_id = s.id
+       WHERE t.id = ? AND t.role = 'principal' LIMIT 1`,
       [principalId]
     );
     if (!rows || rows.length === 0) {
@@ -107,10 +110,11 @@ export async function getSchoolStudents(req, res) {
   const db = getPool();
   try {
     const [rows] = await db.query(`
-      SELECT s.*, sec.grade_id, sec.section_code,
+      SELECT s.*, sec.grade_id, sec.section_code, g.grade_label,
              GROUP_CONCAT(CONCAT(sq.qr_type, ':', sq.qr_code_value) SEPARATOR '|') as qr_codes_raw
       FROM students s
       JOIN sections sec ON sec.id = s.section_id
+      LEFT JOIN grades g ON sec.grade_id = g.id
       LEFT JOIN student_qr_codes sq ON sq.student_id = s.id
       WHERE s.school_id = ?
       GROUP BY s.id

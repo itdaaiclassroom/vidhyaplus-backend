@@ -38,12 +38,15 @@ export function authorizeRole(roles) {
     const allowedRoles = (Array.isArray(roles) ? roles : [roles]).map(r => String(r).toLowerCase());
     const userRole = String(req.user.role || "").toLowerCase();
     
+    console.log(`[Auth] Path: ${req.path}, Required: ${allowedRoles}, Found: ${userRole}`);
+
     // Admins and Principals are often the same in this context, 
     // but Admin always has super-access.
     if (userRole === "admin" || allowedRoles.includes(userRole)) {
       return next();
     }
 
+    console.warn(`[Auth] Forbidden! User role '${userRole}' does not match required roles: ${allowedRoles}`);
     return res.status(403).json({ error: `Forbidden: Requires ${roles} role` });
   };
 }
