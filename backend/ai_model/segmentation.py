@@ -11,7 +11,7 @@ import io
 import httpx
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, UploadFile, Form
 from pydantic import BaseModel
 from pypdf import PdfReader
 from build_index import build as rebuild_rag_index
@@ -135,10 +135,96 @@ def _parse_topics(raw: str, subject: str, grade: int) -> List[TopicSegment]:
     return topics
 
 
+# ---------------------------------------------------------------------------
+# Comprehensive noise filter for Indian school textbook PDFs
+# Blocks: copyright, printing specs, publisher info, anthem, preamble,
+#         figure/table labels, QR/app instructions, page headers
+# ---------------------------------------------------------------------------
+_TOPIC_NOISE = re.compile(
+    r'(?i)('
+    # Publishing / printing boilerplate
+    r'published\s+by|first\s+published|republished|reprinted|'
+    r'printed\s+on|g\s*\.\s*s\s*\.\s*m|maplitho|white\s+art\s+card|'
+    r'title\s+page|copyright|all\s+rights\s+reserved|isbn|'
+    r'hyderabad|andhra\s+pradesh|new\s+delhi|'
+    # Publisher / authority names
+    r'scert|telangana|government\s+of|state\s+council|ncert|cbse|'
+    r'department\s+of|ministry\s+of|board\s+of|'
+    # QR code / app installation steps
+    r'qr\s*code|scan|install|click|download\s+and|'
+    r'play\s+store|app\s+store|choose.*language|'
+    r'student\s*/\s*teacher|'
+    # National anthem / preamble / pledge
+    r'jana\s+gana|adhinayaka|bharat\s+bhagya|'
+    r'we,?\s+the\s+people\s+of\s+india|'
+    r'sovereign|socialist|secular|democratic|republic|'
+    r'well-being\s+and\s+prosperity|'
+    # Figure / table / exercise labels
+    r'^fig[-\s]*[\d(]|^table\s*\d|^fig\.|'
+    r'boiling\s+the|iodine\s+test|'  # figure captions
+    # Class / grade labels (not topics)
+    r'^class\s+[xivlcdm\d]+\s*$|'
+    r'^(biology|physics|chemistry|mathematics|science|social)\s*$|'
+    # Page markers and numbers
+    r'^\d+\s*$|^page\s*\d'
+    r')'
+)
+
+# Lines that look like real academic topic headings in Indian textbooks
+# Must start with "Chapter", a number+dot, or a capitalized word 4+ chars
+_CHAPTER_HEADING = re.compile(
+    r'^(chapter\s+\d+|unit\s+\d+|\d+\.\s+[A-Z])',
+    re.IGNORECASE,
+)
+
+
+def _is_academic_heading(line: str) -> bool:
+    """Return True only if the line looks like a real academic topic heading."""
+    # Must have 2–8 words
+    words = line.split()
+    if not (2 <= len(words) <= 8):
+        return False
+    # Must not be all-caps (those are page headers)
+    alpha_only = re.sub(r'[^a-zA-Z]', '', line)
+    if alpha_only and alpha_only.isupper():
+        return False
+    # Block lines where more than 1 token is a pure number (table data rows)
+    # e.g. "Wanaparthy 4000 1000 155" or "Small 110 - 180 25,000- 65,000"
+    num_tokens = sum(1 for w in words if re.match(r'^\d[\d,.-]*$', w))
+    if num_tokens >= 2:
+        return False
+    # Block lines with any standalone number (likely table data)
+    if re.search(r'\b\d{3,}\b', line):
+        return False
+    # Must start with uppercase letter
+    if not line[0].isupper():
+        return False
+    # Must not be a sentence (sentences end with . ! ? ; ,)
+    if line.endswith(('.', '!', '?', ';', ',')):
+        return False
+    # At least 50% of words must be real alpha words (3+ chars)
+    # This blocks "Table-1: Data at the beginning of the study" (has colon + numbers)
+    real_words = [w for w in words if len(w) >= 3 and w.isalpha()]
+    if len(real_words) < max(1, len(words) // 2):
+        return False
+    # At least one longer content word (4+ chars) for substance
+    long_words = [w for w in words if len(w) >= 4 and w.isalpha()]
+    if len(long_words) < 1:
+        return False
+    # Should NOT contain quotes or special unicode
+    if any(c in line for c in ['"', '\u201c', '\u201d', '\u2014', '©', '®', '™']):
+        return False
+    # Block table-like lines (contain ":" followed by numbers, or dash-separated numbers)
+    if re.search(r':\s*\d|\d\s*-\s*\d', line):
+        return False
+    return True
+
+
 def _rule_based_topics(text: str, subject: str, grade: int) -> List[TopicSegment]:
     """
-    Pure rule-based fallback when AI is unavailable.
-    Detects short Title-Case lines as likely topic headings.
+    Rule-based topic extraction — used when Ollama is offline.
+    Much stricter than before: only returns lines that genuinely
+    look like academic sub-topic headings.
     """
     topics: List[TopicSegment] = []
     order = 1
@@ -146,29 +232,39 @@ def _rule_based_topics(text: str, subject: str, grade: int) -> List[TopicSegment
 
     for line in text.split("\n"):
         line = line.strip()
-        # Heuristic: 5–70 chars, Title Case, no punctuation at end
-        if (
-            5 < len(line) < 70
-            and not line.endswith((".", ",", ":", "?", "!"))
-            and re.search(r"[A-Za-z]", line)  # contains at least one letter
-            and (line[0].isupper() or line[0].isdigit())
-            and line.lower() not in seen
-        ):
-            seen.add(line.lower())
-            topics.append(TopicSegment(
-                name=line,
-                summary=f"Detailed study of {line}.",
-                order_num=order,
-            ))
-            order += 1
-            if order > 10:
-                break
+
+        # Length: topics are typically 10–70 characters
+        if not (10 < len(line) < 70):
+            continue
+
+        # Apply comprehensive noise filter first
+        if _TOPIC_NOISE.search(line):
+            continue
+
+        # Apply academic heading heuristics
+        if not _is_academic_heading(line):
+            continue
+
+        key = line.lower()[:50]
+        if key in seen:
+            continue
+        seen.add(key)
+
+        topics.append(TopicSegment(
+            name=line,
+            summary=f"Study of {line} — a key topic in Grade {grade} {subject}.",
+            order_num=order,
+        ))
+        order += 1
+        if order > 12:
+            break
 
     if not topics:
+        # Absolute fallback — generic structure
         topics = [
-            TopicSegment(name="Introduction", summary="Overview of chapter concepts.", order_num=1),
-            TopicSegment(name="Core Concepts", summary="Deep dive into primary subjects.", order_num=2),
-            TopicSegment(name="Summary & Review", summary="Recap of key learnings.", order_num=3),
+            TopicSegment(name="Introduction", summary="Overview of key concepts in this chapter.", order_num=1),
+            TopicSegment(name="Core Concepts", summary="Primary definitions and explanations.", order_num=2),
+            TopicSegment(name="Summary & Review", summary="Recap and key learnings.", order_num=3),
         ]
     return topics
 
@@ -191,11 +287,17 @@ def _extract_topics_for_chapter(
 
     prompt = f"""You are an expert curriculum designer for Grade {grade} {subject}.
 
-Read the following chapter text from the chapter "{chapter_name}".
-List all logical sub-topics found in this chapter.
+Read the following chapter text from "{chapter_name}".
+List ONLY the real academic sub-topics taught in this chapter.
 
-Output ONLY in this exact format, one topic per line:
-Topic: [Topic Title] | Summary: [One sentence description]
+IMPORTANT - Ignore completely:
+- QR code instructions, app installation steps
+- Publisher names (SCERT, Government, Telangana)
+- Page headers, page numbers, class/subject titles
+- Copyright notices, how-to-use sections
+
+Output ONLY real academic topics in this exact format, one per line:
+Topic: [Topic Title] | Summary: [One sentence description of what students learn]
 
 Chapter Text:
 {text_slice}
@@ -332,28 +434,90 @@ def _extract_chapter_text(reader: PdfReader, start_page: int, end_page: int, max
 # API Endpoints
 # ─────────────────────────────────────────────
 
-@router.post("/segment_chapter")
-def segment_chapter(req: SegmentRequest):
+@router.post("/segment_chapter", summary="Single chapter PDF → list of topics")
+async def segment_chapter(request: Request):
     """
-    Single chapter PDF → extract logical topics with AI.
-    (Upgraded: no more 10-page limit, supports R2/S3 URLs)
+    Extract topics from a single chapter PDF.
+
+    Accepts TWO input formats:
+
+    **Option A — JSON body (URL or local path):**
+    ```json
+    { "pdf_path": "https://...", "subject": "Biology", "grade": 10 }
+    ```
+
+    **Option B — File Upload (multipart/form-data):**
+    ```
+    file=<PDF binary>  subject=Biology  grade=10  chapter_name=Chapter1
+    ```
     """
     try:
-        reader = _get_pdf_reader(req.pdf_path)
+        content_type = request.headers.get("content-type", "")
+        subject = "Subject"
+        grade = 10
+        chapter_name = "this chapter"
+        reader = None
+
+        # ── multipart/form-data (file upload) ─────────────────────────────
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            file: Optional[UploadFile] = form.get("file")  # type: ignore
+            subject = str(form.get("subject") or "Subject")
+            grade   = int(form.get("grade") or 10)
+            chapter_name = str(form.get("chapter_name") or "this chapter")
+
+            if file is None or not hasattr(file, "read"):
+                raise HTTPException(400, "'file' field is required for multipart upload.")
+
+            pdf_bytes = await file.read()
+            if not pdf_bytes:
+                raise HTTPException(400, "Uploaded file is empty.")
+
+            chapter_name = chapter_name or (file.filename or "chapter").rsplit(".", 1)[0]
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+
+        # ── application/json (pdf_path URL or local) ───────────────────────
+        else:
+            body = await request.json()
+            pdf_path   = (body.get("pdf_path") or "").strip()
+            subject    = str(body.get("subject") or "Subject")
+            grade      = int(body.get("grade") or 10)
+            chapter_name = str(body.get("chapter_name") or "")
+
+            if not pdf_path:
+                raise HTTPException(400, "JSON body must include 'pdf_path'.")
+
+            reader = _get_pdf_reader(pdf_path)
+            if not chapter_name:
+                chapter_name = pdf_path.rstrip("/").split("/")[-1].replace("%20", " ").split(".")[0]
+
+        total_pages = len(reader.pages)
+
+        # Skip first 3 pages (front matter / QR code instructions)
+        start_page = min(3, total_pages - 1)
         text = ""
-        for page in reader.pages:  # Read ALL pages of the chapter
+        for page in reader.pages[start_page:]:
             text += page.extract_text() or ""
 
+        if not text.strip():  # fallback: try all pages
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() or ""
+
         if not text.strip():
-            raise HTTPException(status_code=400, detail="Could not extract text from PDF. Make sure it is a text-based PDF (not a scanned image).")
+            raise HTTPException(400, "Could not extract text. Ensure it's a text-based PDF, not a scanned image.")
 
         topics = _extract_topics_for_chapter(
             text=text,
-            chapter_name="this chapter",
-            subject=req.subject,
-            grade=req.grade,
+            chapter_name=chapter_name,
+            subject=subject,
+            grade=grade,
         )
-        return {"topics": [t.model_dump() for t in topics]}
+        return {
+            "topics": [t.model_dump() for t in topics],
+            "total_pages": total_pages,
+            "pages_analyzed": total_pages - start_page,
+        }
 
     except HTTPException:
         raise
@@ -361,58 +525,115 @@ def segment_chapter(req: SegmentRequest):
         raise HTTPException(status_code=500, detail=f"Segmentation failed: {str(e)}")
 
 
-@router.post("/extract_textbook")
-def extract_textbook(req: TextbookRequest):
+@router.post("/extract_textbook", summary="Full textbook PDF → chapters + topics")
+async def extract_textbook(request: Request):
     """
-    Full textbook PDF → detect all chapters → extract topics for each chapter.
-    Supports local files and Cloudflare R2 / S3 bucket URLs.
+    Full textbook PDF → detect all chapters → extract topics per chapter.
+
+    Accepts TWO input formats:
+
+    **Option A — JSON body (URL or local path):**
+    ```json
+    {
+        "pdf_path": "https://...",
+        "subject": "Biology",
+        "grade": 10,
+        "max_chapters": 30,
+        "max_pages_per_chapter": 40
+    }
+    ```
+
+    **Option B — File Upload (multipart/form-data):**
+    ```
+    file=<PDF binary>  subject=Biology  grade=10
+    max_chapters=30    max_pages_per_chapter=40
+    ```
     """
     try:
-        # ── Step 0: Auto-Index for RAG (Chatbot & Quizzes) ──
-        print(f"[segmentation] Triggering auto-index for: {req.pdf_path}")
-        rebuild_rag_index(req.pdf_path)
+        content_type = request.headers.get("content-type", "")
+        subject = "Subject"
+        grade = 10
+        max_chapters = 30
+        max_pages_per_chapter = 40
+        reader = None
 
-        reader = _get_pdf_reader(req.pdf_path)
+        # ── multipart/form-data (file upload) ─────────────────────────────
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            file: Optional[UploadFile] = form.get("file")  # type: ignore
+            subject              = str(form.get("subject") or "Subject")
+            grade                = int(form.get("grade") or 10)
+            max_chapters         = int(form.get("max_chapters") or 30)
+            max_pages_per_chapter = int(form.get("max_pages_per_chapter") or 40)
+
+            if file is None or not hasattr(file, "read"):
+                raise HTTPException(400, "'file' field is required for multipart upload.")
+
+            pdf_bytes = await file.read()
+            if not pdf_bytes:
+                raise HTTPException(400, "Uploaded file is empty.")
+
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+
+        # ── application/json (pdf_path URL or local) ───────────────────────
+        else:
+            body = await request.json()
+            pdf_path              = (body.get("pdf_path") or "").strip()
+            subject               = str(body.get("subject") or "Subject")
+            grade                 = int(body.get("grade") or 10)
+            max_chapters          = int(body.get("max_chapters") or 30)
+            max_pages_per_chapter = int(body.get("max_pages_per_chapter") or 40)
+
+            if not pdf_path:
+                raise HTTPException(400, "JSON body must include 'pdf_path'.")
+
+            # Auto-index for RAG (local files only)
+            is_url = pdf_path.startswith(("http://", "https://"))
+            if not is_url:
+                try:
+                    print(f"[segmentation] Auto-indexing local file: {pdf_path}")
+                    rebuild_rag_index(pdf_path)
+                except Exception as idx_err:
+                    print(f"[segmentation] Auto-index skipped: {idx_err}")
+
+            reader = _get_pdf_reader(pdf_path)
+
         total_pages = len(reader.pages)
 
-        # ── Step 1: Detect chapters ──
+        # ── Step 1: Detect chapters ────────────────────────────────────────
         raw_chapters = _detect_chapters_from_toc(reader)
         detection_method = "table_of_contents"
 
         if not raw_chapters:
-            raw_chapters = _detect_chapters_by_scan(reader, req.max_chapters)
+            raw_chapters = _detect_chapters_by_scan(reader, max_chapters)
             detection_method = "page_scan"
 
         if not raw_chapters:
-            # If absolutely nothing is detected, treat the whole book as one chapter
             raw_chapters = [{"chapter_name": "Full Textbook", "page_index": 0}]
             detection_method = "single_block_fallback"
 
-        # ── Step 2: Build page ranges ──
+        # ── Step 2: Build page ranges ──────────────────────────────────────
         chapters_with_ranges = _build_chapter_page_ranges(raw_chapters, total_pages)
 
-        # ── Step 3: Extract topics per chapter ──
+        # ── Step 3: Extract topics per chapter ────────────────────────────
         results: List[ChapterResult] = []
-
         for i, ch in enumerate(chapters_with_ranges):
             chapter_text = _extract_chapter_text(
                 reader,
                 ch["start_page"],
                 ch["end_page"],
-                req.max_pages_per_chapter,
+                max_pages_per_chapter,
             )
-
             topics = _extract_topics_for_chapter(
                 text=chapter_text,
                 chapter_name=ch["chapter_name"],
-                subject=req.subject,
-                grade=req.grade,
+                subject=subject,
+                grade=grade,
             )
-
             results.append(ChapterResult(
                 chapter_num=i + 1,
                 chapter_name=ch["chapter_name"],
-                start_page=ch["start_page"] + 1,  # Convert to 1-indexed for display
+                start_page=ch["start_page"] + 1,
                 end_page=ch["end_page"] + 1,
                 topics=topics,
             ))
