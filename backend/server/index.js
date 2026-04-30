@@ -61,6 +61,41 @@ app.use("/api/principal", principalRoutes);
 app.use("/api/schools", schoolRoutes);
 app.use("/api/admin", adminManagementRoutes);
 app.use("/api/subjects", subjectRoutes);
+
+// AI Proxy Routes
+app.post("/api/ai/ask", async (req, res) => {
+  try {
+    const aiUrl = (process.env.VITE_AI_API_URL || "http://187.127.158.229:8001").replace(/\/$/, "");
+    const response = await fetch(`${aiUrl}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    if (!response.ok) throw new Error(`AI service returned ${response.status}`);
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error("AI Proxy Error (/ask):", err.message);
+    res.status(500).json({ error: "AI Assistant is currently unavailable." });
+  }
+});
+
+app.post("/api/ai/recommend", async (req, res) => {
+  try {
+    const aiUrl = (process.env.VITE_AI_API_URL || "http://187.127.158.229:8001").replace(/\/$/, "");
+    const response = await fetch(`${aiUrl}/recommend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    if (!response.ok) throw new Error(`AI service returned ${response.status}`);
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error("AI Proxy Error (/recommend):", err.message);
+    res.status(500).json({ error: "Could not fetch recommendations." });
+  }
+});
 const qrcodesDir = path.join(uploadsDir, "qrcodes");
 const textbookDir = path.join(uploadsDir, "textbook");
 const pptDir = path.join(uploadsDir, "ppt");
