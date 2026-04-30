@@ -2338,7 +2338,22 @@ app.get("/api/live-quiz/:id/status", async (req, res) => {
     const [qRows] = await db.query("SELECT COUNT(*) AS c FROM live_quiz_questions WHERE live_quiz_session_id = ?", [sessionId]);
     const [aRows] = await db.query("SELECT COUNT(*) AS c FROM live_quiz_answers WHERE live_quiz_session_id = ?", [sessionId]);
     const state = getRuntimeState(sessionId);
-    const progressByQuestion = state.progressByQuestion || {};
+    
+    // Dynamically calculate progress from database for 100% accuracy
+    const [progressRows] = await db.query(
+      "SELECT q.order_num, COUNT(DISTINCT a.student_id) as c " +
+      "FROM live_quiz_questions q " +
+      "LEFT JOIN live_quiz_answers a ON q.id = a.question_id " +
+      "WHERE q.live_quiz_session_id = ? " +
+      "GROUP BY q.order_num",
+      [sessionId]
+    );
+    const progressByQuestion = {};
+    if (Array.isArray(progressRows)) {
+      progressRows.forEach(r => {
+        progressByQuestion[String(r.order_num)] = Number(r.c || 0);
+      });
+    }
     const payload = {
       sessionId: String(sessionId),
       started: Boolean(state.started),
@@ -2521,6 +2536,17 @@ app.post("/api/live-quiz/:id/scan", async (req, res) => {
       [sessionId, Number(student.id), Number(question.id), selectedOption, isCorrect]
     );
     const studentName = [student.first_name, student.last_name].filter(Boolean).join(" ").trim() || `Student ${student.id}`;
+    
+    // Update runtime state progress so teacher dashboard sees it immediately
+    const state = getRuntimeState(sessionId);
+    const qKey = String(qNo);
+    const [countRows] = await db.query(
+        "SELECT COUNT(DISTINCT student_id) as c FROM live_quiz_answers WHERE live_quiz_session_id = ? AND question_id = ?",
+        [sessionId, Number(question.id)]
+    );
+    state.progressByQuestion[qKey] = Number(countRows?.[0]?.c || 0);
+    liveQuizRuntime.set(sessionId, state);
+
     liveQuizCheckpoint("POST /api/live-quiz/:id/scan:ok", {
       sessionId,
       questionNo: qNo,
@@ -2529,6 +2555,7 @@ app.post("/api/live-quiz/:id/scan", async (req, res) => {
       attendanceDate,
       selectedOption,
       isCorrect: isCorrect === 1,
+      currentProgress: state.progressByQuestion[qKey]
     });
     res.json({
       ok: true,
