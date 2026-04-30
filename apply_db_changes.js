@@ -52,13 +52,46 @@ async function applyChanges() {
     }
 
     try {
-      await db.query(`ALTER TABLE attendance 
-        ADD COLUMN teacher_id INT UNSIGNED NULL,
-        ADD COLUMN section_id INT UNSIGNED NULL;`);
-      console.log("Added teacher_id and section_id to attendance table.");
+      await db.query(`ALTER TABLE students 
+        MODIFY COLUMN roll_year SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        MODIFY COLUMN roll_seq INT UNSIGNED NOT NULL DEFAULT 0,
+        MODIFY COLUMN roll_no VARCHAR(24) NOT NULL DEFAULT '';`);
+      console.log("Updated students table schema for roll numbers.");
     } catch (e) {
-      if (e.code === 'ER_DUP_FIELDNAME') console.log("teacher_id/section_id columns already exist in attendance table.");
-      else throw e;
+      console.error("Error updating students schema:", e.message);
+    }
+
+    // 4. Re-apply roll_no trigger
+    try {
+      await db.query(`DROP TRIGGER IF EXISTS trg_students_before_insert_rollno;`);
+      await db.query(`
+        CREATE TRIGGER trg_students_before_insert_rollno
+        BEFORE INSERT ON students
+        FOR EACH ROW
+        BEGIN
+          DECLARE v_roll_year SMALLINT UNSIGNED;
+          DECLARE v_next_seq INT UNSIGNED;
+
+          SET v_roll_year = YEAR(COALESCE(NEW.joined_at, CURDATE()));
+
+          SELECT COALESCE(MAX(st.roll_seq), 0) + 1
+            INTO v_next_seq
+          FROM students st
+          WHERE st.school_id = NEW.school_id
+            AND st.roll_year = v_roll_year;
+
+          SET NEW.roll_year = v_roll_year;
+          SET NEW.roll_seq = v_next_seq;
+          SET NEW.roll_no = CONCAT(
+            v_roll_year,
+            NEW.school_id,
+            LPAD(v_next_seq, 3, '0')
+          );
+        END;
+      `);
+      console.log("Re-applied roll_no trigger with new format.");
+    } catch (e) {
+      console.error("Error applying trigger:", e.message);
     }
 
     console.log("All database changes applied successfully.");

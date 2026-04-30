@@ -320,24 +320,20 @@ export async function bulkCreateStudents(req, res) {
       
       // Duplicate Check
       let existingStudent = null;
-      if (aadhaar) {
-        const [existing] = await db.query(
-          "SELECT id FROM students WHERE school_id = ? AND aadhaar = ? LIMIT 1",
-          [schoolIdNum, aadhaar]
-        );
-        if (existing && existing.length > 0) existingStudent = existing[0];
-      }
       
-      if (!existingStudent) {
-        const [existing] = await db.query(
-          "SELECT id FROM students WHERE school_id = ? AND first_name = ? AND last_name = ? AND father_name = ? AND (dob = ? OR dob IS NULL) LIMIT 1",
-          [schoolIdNum, firstNameResolved, lastNameResolved, father_name || null, dob || null]
-        );
-        if (existing && existing.length > 0) existingStudent = existing[0];
-      }
+      // Aadhaar check removed as requested by user.
+      
+      const [existing] = await db.query(
+        "SELECT id, first_name, last_name FROM students WHERE school_id = ? AND section_id = ? AND first_name = ? AND last_name = ? LIMIT 1",
+        [schoolIdNum, resolvedSectionId, firstNameResolved, lastNameResolved]
+      );
+      if (existing && existing.length > 0) existingStudent = existing[0];
 
       if (existingStudent) {
-        results.failed.push({ student, error: "This student is already registered." });
+        results.failed.push({ 
+          student, 
+          error: `This student is already registered (Matches ID: ${existingStudent.id}).` 
+        });
         continue;
       }
 
@@ -390,7 +386,7 @@ export async function bulkCreateStudents(req, res) {
       });
     } catch (err) {
       if (err.code === 'ER_DUP_ENTRY') {
-        results.failed.push({ student, error: "This student is already registered." });
+        results.failed.push({ student, error: `Duplicate entry error: ${err.message}` });
       } else {
         results.failed.push({ student, error: err.message });
       }
