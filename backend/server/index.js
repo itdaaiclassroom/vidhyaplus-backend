@@ -3359,7 +3359,7 @@ app.post("/api/attendance", async (req, res) => {
 });
 
 // --- AI: Recommendations & Assistant ---
-const AI_SERVER_URL = process.env.VITE_AI_API_URL || "http://localhost:8001";
+const AI_SERVER_URL = process.env.VITE_AI_API_URL || "http://187.127.158.229:8001";
 
 app.post("/api/ai/recommend", async (req, res) => {
   const { topic, subject, grade } = req.body || {};
