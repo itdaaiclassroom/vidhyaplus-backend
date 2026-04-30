@@ -224,7 +224,11 @@ def call_ollama(prompt: str, max_tokens: int = 500) -> Optional[str]:
                         "model": _ollama_model,
                         "prompt": prompt,
                         "stream": False,
-                        "options": {"num_predict": max_tokens}
+                        "options": {
+                        "num_predict": max_tokens,
+                        "temperature": 0.2,  # Lower temperature = more strict following of format
+                        "top_p": 0.9
+                    }
                     }
                 )
                 if resp.status_code == 200:
@@ -435,13 +439,14 @@ def _parse_mcqs(text: str, max_q: int = 10) -> List[dict]:
     """Parse Ollama MCQ output into structured list."""
     questions = []
     block = (text or "").strip()
-    parts = re.split(r"\n\s*(?:Question\s*\d+|Q\s*\d+)[.:)\s]+", block, flags=re.IGNORECASE)
-
+    # Split by: Question 1, Q1, 1., etc.
+    parts = re.split(r"\n\s*(?:Question|Q|#)?\s*\d+[.:)\s\-]+", "\n" + block, flags=re.IGNORECASE)
+    
     for part in parts:
         if len(questions) >= max_q:
             break
         part = part.strip()
-        if not part or len(part) < 20:
+        if not part or len(part) < 15:
             continue
 
         opts = {"A": "", "B": "", "C": "", "D": ""}
@@ -451,16 +456,17 @@ def _parse_mcqs(text: str, max_q: int = 10) -> List[dict]:
         lines = [l.strip() for l in part.replace("\r", "\n").split("\n") if l.strip()]
 
         for line in lines:
-            m = re.match(r"^([A-D])[.)]\s*(.+)$", line, re.IGNORECASE)
+            # Match A) option, A. option, [A] option
+            m = re.match(r"^[(]?([A-D])[.)\]\s]+(.+)$", line, re.IGNORECASE)
             if m:
                 opts[m.group(1).upper()] = m.group(2).strip()
-            elif re.match(r"^correct\s*:\s*([A-D])", line, re.IGNORECASE):
-                c = re.search(r"[A-D]", line, re.IGNORECASE)
+            elif re.search(r"correct\s*(?:option|answer)?\s*[:\-]\s*([A-D])", line, re.IGNORECASE):
+                c = re.search(r"([A-D])", line.split(":", 1)[-1] if ":" in line else line, re.IGNORECASE)
                 if c:
-                    correct = c.group(0).upper()
+                    correct = c.group(1).upper()
             elif line.lower().startswith("explanation"):
                 explanation = line.split(":", 1)[-1].strip() if ":" in line else line[11:].strip()
-            elif not q_text and len(line) > 10:
+            elif not q_text and len(line) > 8:
                 q_text = line
 
         if not q_text:
