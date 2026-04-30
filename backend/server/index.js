@@ -1971,7 +1971,7 @@ async function fetchQuizQuestions(topicName, subjectName, grade = 10, meta = {})
 
   // Try AI server first
   try {
-    const aiRes = await fetch("http://localhost:8001/generate_quiz", {
+    const aiRes = await fetch("http://187.127.158.229:8001/generate_quiz", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ topic_name: topicName, subject: subjectName, grade }),
