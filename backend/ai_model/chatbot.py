@@ -171,7 +171,7 @@ llm_task = None
 
 # ── Check Ollama at startup ────────────────────────────────────────────────
 try:
-    _ping = requests.get("http://localhost:11434/api/tags", timeout=3)
+    _ping = requests.get("http://127.0.0.1:11434/api/tags", timeout=3)
     if _ping.status_code == 200:
         _installed = [m.get("name", "") for m in _ping.json().get("models", [])]
         print(f"[chatbot] ✅ PRIMARY LLM  → Ollama RUNNING | model={_ollama_model} | installed={_installed or ['(none)']}")
@@ -207,28 +207,39 @@ print(f"[chatbot] 📋 Priority: 1=Ollama({_ollama_model}) → 2=RAG chunk → 3
 # ---------------------------------------------------------------------------
 
 def call_ollama(prompt: str, max_tokens: int = 500) -> Optional[str]:
-    """Call local Ollama API."""
+    """
+    Call local Ollama API with automatic retry logic.
+    Retries once on failure to handle transient VPS load.
+    """
     if not _ollama_model:
         return None
-    try:
-        # Increased timeout to 120s for VPS performance
-        with httpx.Client(timeout=120.0) as client:
-            resp = client.post(
-                "http://localhost:11434/api/generate",
-                json={
-                    "model": _ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"num_predict": max_tokens}
-                }
-            )
-            if resp.status_code == 200:
-                result = resp.json().get("response", "")
-                return result.strip() if result else None
-            else:
-                print(f"[ollama] Error: {resp.status_code} - {resp.text}")
-    except Exception as e:
-        print(f"[ollama] Connection failed: {e}")
+    
+    for attempt in [1, 2]:
+        try:
+            # 120s timeout for VPS performance
+            with httpx.Client(timeout=120.0) as client:
+                resp = client.post(
+                    "http://127.0.0.1:11434/api/generate",
+                    json={
+                        "model": _ollama_model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"num_predict": max_tokens}
+                    }
+                )
+                if resp.status_code == 200:
+                    result = resp.json().get("response", "")
+                    return result.strip() if result else None
+                else:
+                    print(f"[ollama] Attempt {attempt} Error: {resp.status_code}")
+        except Exception as e:
+            print(f"[ollama] Attempt {attempt} failed: {e}")
+        
+        # Wait 1 second before retrying
+        if attempt == 1:
+            import time
+            time.sleep(1.0)
+            
     return None
 
 
@@ -236,7 +247,7 @@ def ollama_available() -> bool:
     """Quick reachability check."""
     try:
         # 5s timeout for VPS
-        r = requests.get("http://localhost:11434/api/tags", timeout=5)
+        r = requests.get("http://127.0.0.1:11434/api/tags", timeout=5)
         return r.status_code == 200
     except Exception:
         return False
@@ -245,7 +256,7 @@ def ollama_available() -> bool:
 def ollama_status() -> dict:
     """Detailed Ollama status for /ollama-status endpoint."""
     try:
-        r = requests.get("http://localhost:11434/api/tags", timeout=3)
+        r = requests.get("http://127.0.0.1:11434/api/tags", timeout=3)
         if r.status_code == 200:
             models = [m.get("name", "") for m in r.json().get("models", [])]
             installed = any(_ollama_model.split(":")[0] in m for m in models)
