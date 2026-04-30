@@ -2830,23 +2830,39 @@ app.get("/live-quiz-scan", (req, res) => {
           totalQuestions = Number(s.questions || 10);
           runtimeStarted = Boolean(s.started);
           runtimeAttendanceReady = Boolean(s.attendanceReady);
-          const st = document.getElementById("status");
           const q = qnoValue();
           const qCount = currentCountForQuestion(q);
-          st.textContent = "Connected devices: " + (s.connectedDevices || 0) + " | Capture: " + (s.started ? "Started" : "Waiting") + " | Q" + q + ": " + qCount + "/" + expectedPerQuestion + " | DB captured: " + (s.answersCaptured || 0);
+          
+          // Auto-sync question number with teacher dashboard
+          const teacherQ = Number(s.currentQuestionNo || 1);
+          const mobileQ = qnoValue();
+          if (teacherQ > mobileQ) {
+            document.getElementById("qno").value = teacherQ;
+            lqCheckpoint("sync_qno", { from: mobileQ, to: teacherQ });
+          }
+
+          st.textContent = "Scanner: " + (s.connectedDevices || 0) + " | Status: " + (s.started ? "ACTIVE" : "WAITING") + " | Q" + q + " Scans: " + qCount + "/" + expectedPerQuestion;
+          
           const nextBtn = document.getElementById("nextBtn");
-          // Allow moving to next question during capture; final submit still enforces full completion.
-          const canMoveNext = q < totalQuestions;
-          nextBtn.disabled = !canMoveNext;
+          nextBtn.disabled = q >= totalQuestions;
+          
           const finalBtn = document.getElementById("finalBtn");
-          const allComplete = (() => {
-            if (expectedPerQuestion < 1) return false;
-            for (let i = 1; i <= totalQuestions; i++) {
-              if (currentCountForQuestion(i) !== expectedPerQuestion) return false;
-            }
-            return true;
-          })();
-          finalBtn.disabled = !allComplete;
+          // Requirement: At least one scan across all questions, OR teacher board says submitted.
+          let hasAnyScan = false;
+          let missingCount = 0;
+          for (let i = 1; i <= totalQuestions; i++) {
+            const count = currentCountForQuestion(i);
+            if (count > 0) hasAnyScan = true;
+            if (count < expectedPerQuestion) missingCount += (expectedPerQuestion - count);
+          }
+          finalBtn.disabled = !hasAnyScan;
+          if (hasAnyScan && missingCount > 0) {
+            finalBtn.textContent = "Submit (Missing " + missingCount + " scans)";
+            finalBtn.style.background = "#d97706"; // Amber
+          } else if (hasAnyScan) {
+            finalBtn.textContent = "Submit All Answers";
+            finalBtn.style.background = "#059669"; // Green
+          }
         } catch (_) {}
       }
 
