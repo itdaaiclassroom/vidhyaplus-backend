@@ -20,6 +20,8 @@ import pickle
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+router = APIRouter()
+
 
 _HERE = Path(__file__).resolve().parent
 INDEXES_DIR = _HERE / "indexes"
@@ -145,7 +147,7 @@ document_registry = DocumentRegistry()
 
 
 # ---------------------------------------------------------------------------
-# LLM setup (Ollama preferred, local HF model as fallback)
+# LLM setup — PRIMARY: Ollama (mistral/any model) | FALLBACK: local HF distilgpt2
 # ---------------------------------------------------------------------------
 
 _model_name = (os.environ.get("CHATBOT_MODEL") or "distilgpt2").strip()
@@ -155,24 +157,38 @@ _ollama_model = (os.environ.get("OLLAMA_MODEL") or "mistral").strip()
 llm = None
 llm_task = None
 
-print(f"[chatbot] Loading fallback LLM ({_model_name})...")
+# ── Check Ollama at startup (PRIMARY LLM) ────────────────────────────────────
+try:
+    _ollama_check = requests.get("http://localhost:11434/api/tags", timeout=3)
+    if _ollama_check.status_code == 200:
+        _models = [m.get("name", "") for m in _ollama_check.json().get("models", [])]
+        print(f"[chatbot] ✅ PRIMARY LLM  → Ollama is RUNNING | model: {_ollama_model} | installed: {_models or ['(none pulled yet)']}")       
+    else:
+        print(f"[chatbot] ⚠️  PRIMARY LLM  → Ollama responded with status {_ollama_check.status_code}")
+except Exception:
+    print(f"[chatbot] ❌ PRIMARY LLM  → Ollama NOT reachable at localhost:11434 — will use fallback")
+
+# ── Load distilgpt2 as FALLBACK (only used when Ollama is offline) ────────────
+print(f"[chatbot] ⏳ FALLBACK LLM → Loading {_model_name} (used only if Ollama is offline)...")
 try:
     from transformers import pipeline
     llm_task = _preferred_task
     llm = pipeline(llm_task, model=_model_name)
-    print(f"[chatbot] Fallback LLM ready: {_model_name}")
+    print(f"[chatbot] ✅ FALLBACK LLM → {_model_name} ready (standby only)")
 except Exception as e:
-    print(f"[chatbot] Fallback LLM failed to load: {str(e)[:120]}")
+    print(f"[chatbot] ⚠️  FALLBACK LLM → {_model_name} failed: {str(e)[:120]}")
     try:
         from transformers import pipeline
         llm_task = "text-generation"
         fallback_model = (os.environ.get("CHATBOT_FALLBACK_MODEL") or "distilgpt2").strip()
         llm = pipeline(llm_task, model=fallback_model)
-        print(f"[chatbot] Secondary fallback LLM: {fallback_model}")
+        print(f"[chatbot] ✅ FALLBACK LLM → {fallback_model} ready (secondary standby)")
     except Exception:
         llm = None
         llm_task = None
-        print("[chatbot] No fallback LLM available. Will use Ollama only.")
+        print("[chatbot] ❌ FALLBACK LLM → No local model available. Ollama is required.")
+
+print("[chatbot] 📋 LLM Priority: 1st=Ollama(mistral) → 2nd=RAG chunk → 3rd=distilgpt2")
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +228,32 @@ def ollama_available() -> bool:
         return r.status_code == 200
     except Exception:
         return False
+
+
+def ollama_status() -> dict:
+    """Detailed Ollama status: running, model list, active model."""
+    try:
+        r = requests.get("http://localhost:11434/api/tags", timeout=3)
+        if r.status_code == 200:
+            models = [m.get("name", "") for m in r.json().get("models", [])]
+            configured_model = _ollama_model
+            model_installed = any(configured_model.split(":")[0] in m for m in models)
+            return {
+                "running": True,
+                "configured_model": configured_model,
+                "model_installed": model_installed,
+                "installed_models": models,
+                "message": "Ollama is running. Model '" + configured_model + "' " + ("installed OK" if model_installed else "NOT installed — run: ollama pull " + configured_model),
+            }
+        return {"running": False, "configured_model": _ollama_model, "model_installed": False, "installed_models": [], "message": f"Ollama returned status {r.status_code}"}
+    except Exception as e:
+        return {
+            "running": False,
+            "configured_model": _ollama_model,
+            "model_installed": False,
+            "installed_models": [],
+            "message": "Ollama not reachable: " + str(e)[:100] + ". Start with: ollama serve",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +436,7 @@ def generate_quiz(body: GenerateQuizBody):
     grade = body.grade or 10
     count = max(1, min(body.count, 20)) # Safety limit 1-20
     query = f"{subject} class {grade} {topic}"
-    retrieved = retrieve_chunks(query)
+    retrieved = [chunk for chunk, _ in document_registry.retrieve_chunks(query, k=5)]
     context = "\n\n".join(retrieved[:5])[:2500] if retrieved else f"Topic: {topic}. Subject: {subject}. Class: {grade}."
     prompt = f"""Generate exactly {count} multiple choice questions (MCQ) for class {grade} topic: {topic} ({subject}).
 Use ONLY the context below. Each question must have 4 options labeled A, B, C, D and one correct answer.
@@ -419,10 +461,10 @@ Rules:
 Context:
 {context}
 
-Generate {num_questions} questions now:"""
+Generate {count} questions now:"""
 
     # Ollama gives best quality quizzes
-    ollama_raw = call_ollama(prompt, max_tokens=min(2000, num_questions * 120))
+    ollama_raw = call_ollama(prompt, max_tokens=min(2000, count * 120))
     if ollama_raw:
         out = _parse_mcqs_from_text(ollama_raw, count)
         if len(out) >= (count // 2): 
