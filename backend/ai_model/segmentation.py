@@ -63,10 +63,14 @@ def _get_pdf_reader(path_or_url: str) -> PdfReader:
     """
     if path_or_url.startswith(("http://", "https://")):
         try:
-            # Using httpx with a realistic User-Agent to avoid bot blocking on VPS
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-            # verify=False is CRITICAL for government websites (scert.telangana.gov.in) which often have invalid SSL certs
-            response = httpx.get(path_or_url, headers=headers, follow_redirects=True, timeout=60.0, verify=False)
+            # Full browser spoofing + massive 5-minute timeout for slow Indian govt servers
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Referer": "https://www.google.com/"
+            }
+            response = httpx.get(path_or_url, headers=headers, follow_redirects=True, timeout=300.0, verify=False)
             if response.status_code != 200:
                 print(f"[segmentation] URL fetch failed with HTTP {response.status_code} for {path_or_url}")
                 raise HTTPException(
