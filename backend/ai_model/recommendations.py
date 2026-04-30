@@ -102,8 +102,8 @@ def build_search_query(topic: Optional[str], subject: Optional[str],
     subj = _normalize_subject(subject)
     t = (topic or "").strip() or (chapter or "").strip() or (fallback or "").strip()
     g = grade if grade else 10
-    parts = [p for p in [subj, t, f"class {g}", "NCERT", "CBSE"] if p and str(p).strip()]
-    return " ".join(parts).strip() or f"class {g} NCERT education"
+    parts = [p for p in [subj, t, f"class {g}", "SSC", "Telangana Board"] if p and str(p).strip()]
+    return " ".join(parts).strip() or f"class {g} SSC Telangana education"
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +214,7 @@ def search_resources(query: str) -> list:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             with DDGS() as ddgs:
-                results = ddgs.text(f"{query} notes pdf CBSE NCERT", max_results=8)
+                results = ddgs.text(f"{query} notes pdf SSC Telangana Board", max_results=8)
         for r in results:
             url = (r.get("href") or "").strip()
             title = (r.get("title") or "").strip()
