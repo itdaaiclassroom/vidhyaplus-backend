@@ -671,7 +671,7 @@ app.get("/api/all", async (req, res) => {
         classIds = typeof t.assigned_class_ids === 'string' ? JSON.parse(t.assigned_class_ids) : (t.assigned_class_ids || []);
         if (!Array.isArray(classIds)) classIds = [];
       } catch (e) { classIds = []; }
-      
+
       let subjectIds = [];
       try {
         subjectIds = typeof t.assigned_subject_ids === 'string' ? JSON.parse(t.assigned_subject_ids) : (t.assigned_subject_ids || []);
@@ -693,7 +693,7 @@ app.get("/api/all", async (req, res) => {
       }
 
       teacherIdsByClass[tid] = Array.from(new Set(classIds.map(id => toId(id))));
-      
+
       teacherSubjectNames[tid] = new Set();
       Array.from(new Set(subjectIds)).forEach(sid => {
         const sub = subjectsRows.find(s => toId(s.id) === toId(sid));
@@ -2385,7 +2385,7 @@ app.get("/api/live-quiz/:id/status", async (req, res) => {
     const [qRows] = await db.query("SELECT COUNT(*) AS c FROM live_quiz_questions WHERE live_quiz_session_id = ?", [sessionId]);
     const [aRows] = await db.query("SELECT COUNT(*) AS c FROM live_quiz_answers WHERE live_quiz_session_id = ?", [sessionId]);
     const state = getRuntimeState(sessionId);
-    
+
     // Dynamically calculate progress from database for 100% accuracy
     const [progressRows] = await db.query(
       "SELECT q.order_num, COUNT(DISTINCT a.student_id) as c " +
@@ -2530,7 +2530,7 @@ app.post("/api/live-quiz/:id/scan", async (req, res) => {
     const qIndex = qNo - 1;
     const question = Array.isArray(questionRows) && questionRows[qIndex] ? questionRows[qIndex] : null;
     if (!question) return res.status(400).json({ error: `Question ${qNo} not found in this session` });
-    
+
     // 3. Fetch Student
     const [studentRows] = await db.query(
       "SELECT id, first_name, last_name FROM students WHERE section_id = ? AND roll_no = ? LIMIT 1",
@@ -2956,7 +2956,7 @@ app.get("/live-quiz-scan", (req, res) => {
                     document.getElementById("qr").value = "";
                   } catch (e) {
                     // duplicates / not started are normal; don't spam
-                    msgEl.className = "muted";
+                    msgEl.className = "err";
                     msgEl.textContent = e && e.message ? e.message : "Scan ignored";
                   }
                 } else {
@@ -3327,7 +3327,7 @@ app.post("/api/ai/recommend", async (req, res) => {
 
   // Fallback: Generate real YouTube embeddable links for common topics
   const query = encodeURIComponent(`${subject} Class ${grade} ${topic}`);
-  
+
   // Real educational video IDs for common subjects as better fallbacks
   const fallbackVideos = [
     { title: `Understanding ${topic}`, url: `https://www.youtube.com/watch?v=dQw4w9WgXcQ`, description: `Core concepts of ${topic} explained.` },
@@ -3872,49 +3872,49 @@ const HOST = process.env.HOST || "0.0.0.0";
     // Ensure subjects table has grades and icon columns
     try {
       await db.query("ALTER TABLE subjects ADD COLUMN grades VARCHAR(255) AFTER subject_name");
-    } catch (_) {}
+    } catch (_) { }
     try {
       await db.query("ALTER TABLE subjects ADD COLUMN icon VARCHAR(255) AFTER grades");
-    } catch (_) {}
+    } catch (_) { }
 
     // Add JSON columns to teachers table for assignments
     try {
       await db.query("ALTER TABLE teachers ADD COLUMN assigned_subject_ids JSON NULL");
-    } catch (_) {}
+    } catch (_) { }
     try {
       await db.query("ALTER TABLE teachers ADD COLUMN assigned_class_ids JSON NULL");
-    } catch (_) {}
+    } catch (_) { }
     try {
       await db.query("ALTER TABLE teachers ADD COLUMN assigned_section_ids JSON NULL");
-    } catch (_) {}
+    } catch (_) { }
 
     // Update teacher_attendance table
     try {
       await db.query("ALTER TABLE teacher_attendance ADD COLUMN school_id INT UNSIGNED");
-    } catch (_) {}
+    } catch (_) { }
     try {
       await db.query("ALTER TABLE teacher_attendance CHANGE date attendance_date DATE NOT NULL");
-    } catch (_) {}
+    } catch (_) { }
     try {
       await db.query("ALTER TABLE teacher_attendance ADD COLUMN status ENUM('present','absent','leave')");
-    } catch (_) {}
+    } catch (_) { }
     try {
       await db.query("ALTER TABLE teacher_attendance DROP INDEX unique_attendance");
-    } catch (_) {}
+    } catch (_) { }
     try {
       await db.query("ALTER TABLE teacher_attendance ADD UNIQUE KEY unique_teacher_day (teacher_id, attendance_date)");
-    } catch (_) {}
+    } catch (_) { }
 
     // Update student attendance table
     try {
       await db.query("ALTER TABLE attendance CHANGE date attendance_date DATE NOT NULL");
-    } catch (_) {}
+    } catch (_) { }
     try {
       await db.query("ALTER TABLE attendance ADD COLUMN teacher_id INT UNSIGNED NULL");
-    } catch (_) {}
+    } catch (_) { }
     try {
       await db.query("ALTER TABLE attendance ADD COLUMN section_id INT UNSIGNED NULL");
-    } catch (_) {}
+    } catch (_) { }
 
     console.log("[db] Checked/created required tables and modified schemas for assignments and attendance.");
   } catch (err) {

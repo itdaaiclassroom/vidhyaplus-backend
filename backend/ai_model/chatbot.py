@@ -473,6 +473,11 @@ def _parse_mcqs(text: str, max_q: int = 10) -> List[dict]:
         part = part.strip()
         if not part or len(part) < 15:
             continue
+            
+        # Skip preamble: a valid question must have at least an Option A
+        if not re.search(r"\n\s*[(]?[A][.)\]\-]+", "\n" + part, re.IGNORECASE):
+            continue
+
 
         opts = {"A": "", "B": "", "C": "", "D": ""}
         correct = "A"
@@ -734,6 +739,7 @@ Rules:
 - Vary difficulty: mix easy, medium, hard.
 - Do NOT repeat questions.
 - Base questions on the context ONLY.
+- DO NOT add any conversational preamble. Start directly with "Question 1:".
 
 Context:
 {context or f"Topic: {topic}. Subject: {subject}. Grade: {grade}."}
