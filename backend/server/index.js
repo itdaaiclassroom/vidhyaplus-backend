@@ -61,6 +61,41 @@ app.use("/api/principal", principalRoutes);
 app.use("/api/schools", schoolRoutes);
 app.use("/api/admin", adminManagementRoutes);
 app.use("/api/subjects", subjectRoutes);
+
+// AI Proxy Routes
+app.post("/api/ai/ask", async (req, res) => {
+  try {
+    const aiUrl = (process.env.VITE_AI_API_URL || "http://187.127.158.229:8001").replace(/\/$/, "");
+    const response = await fetch(`${aiUrl}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    if (!response.ok) throw new Error(`AI service returned ${response.status}`);
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error("AI Proxy Error (/ask):", err.message);
+    res.status(500).json({ error: "AI Assistant is currently unavailable." });
+  }
+});
+
+app.post("/api/ai/recommend", async (req, res) => {
+  try {
+    const aiUrl = (process.env.VITE_AI_API_URL || "http://187.127.158.229:8001").replace(/\/$/, "");
+    const response = await fetch(`${aiUrl}/recommend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    if (!response.ok) throw new Error(`AI service returned ${response.status}`);
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error("AI Proxy Error (/recommend):", err.message);
+    res.status(500).json({ error: "Could not fetch recommendations." });
+  }
+});
 const qrcodesDir = path.join(uploadsDir, "qrcodes");
 const textbookDir = path.join(uploadsDir, "textbook");
 const pptDir = path.join(uploadsDir, "ppt");
@@ -325,25 +360,23 @@ async function getQuizAttendanceDate(db, classId, liveSessionId, fallbackDate) {
   const cid = Number(classId);
   if (!cid) return fb;
   try {
-    // 1) Prefer today's attendance for this class (dynamic, based on attendance table).
     const now = new Date();
     const todayLocal = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    // Use attendance_date as unified column name
     const [todayRows] = await db.query(
-      "SELECT date FROM attendance WHERE class_id = ? AND date = ? ORDER BY id DESC LIMIT 1",
+      "SELECT attendance_date FROM attendance WHERE class_id = ? AND attendance_date = ? ORDER BY id DESC LIMIT 1",
       [cid, todayLocal]
     );
-    const todayAttendance = todayRows && todayRows[0] && todayRows[0].date ? toDateKey(todayRows[0].date) : null;
+    const todayAttendance = todayRows && todayRows[0] && todayRows[0].attendance_date ? toDateKey(todayRows[0].attendance_date) : null;
     if (todayAttendance) return todayAttendance;
 
-    // 2) Else use the latest submitted attendance date for this class.
     const [latestRows] = await db.query(
-      "SELECT date FROM attendance WHERE class_id = ? ORDER BY date DESC, id DESC LIMIT 1",
+      "SELECT attendance_date FROM attendance WHERE class_id = ? ORDER BY attendance_date DESC, id DESC LIMIT 1",
       [cid]
     );
-    const latestAttendance = latestRows && latestRows[0] && latestRows[0].date ? toDateKey(latestRows[0].date) : null;
+    const latestAttendance = latestRows && latestRows[0] && latestRows[0].attendance_date ? toDateKey(latestRows[0].attendance_date) : null;
     if (latestAttendance) return latestAttendance;
 
-    // 3) Else fallback to linked live session date.
     if (liveSessionId) {
       const [rows] = await db.query("SELECT session_date FROM live_sessions WHERE id = ? LIMIT 1", [Number(liveSessionId)]);
       const r = rows && rows[0] ? rows[0] : null;
@@ -351,7 +384,8 @@ async function getQuizAttendanceDate(db, classId, liveSessionId, fallbackDate) {
       if (sessionDate) return sessionDate;
     }
     return fb;
-  } catch (_) {
+  } catch (err) {
+    console.error("getQuizAttendanceDate error:", err.message);
     return fb;
   }
 }
@@ -1972,7 +2006,7 @@ async function fetchQuizQuestions(topicName, subjectName, grade = 10, meta = {})
 
   // Try AI server first
   try {
-    const aiRes = await fetch("http://localhost:8001/generate_quiz", {
+    const aiRes = await fetch("http://187.127.158.229:8001/generate_quiz", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ topic_name: topicName, subject: subjectName, grade }),
@@ -2339,7 +2373,22 @@ app.get("/api/live-quiz/:id/status", async (req, res) => {
     const [qRows] = await db.query("SELECT COUNT(*) AS c FROM live_quiz_questions WHERE live_quiz_session_id = ?", [sessionId]);
     const [aRows] = await db.query("SELECT COUNT(*) AS c FROM live_quiz_answers WHERE live_quiz_session_id = ?", [sessionId]);
     const state = getRuntimeState(sessionId);
-    const progressByQuestion = state.progressByQuestion || {};
+    
+    // Dynamically calculate progress from database for 100% accuracy
+    const [progressRows] = await db.query(
+      "SELECT q.order_num, COUNT(DISTINCT a.student_id) as c " +
+      "FROM live_quiz_questions q " +
+      "LEFT JOIN live_quiz_answers a ON q.id = a.question_id " +
+      "WHERE q.live_quiz_session_id = ? " +
+      "GROUP BY q.order_num",
+      [sessionId]
+    );
+    const progressByQuestion = {};
+    if (Array.isArray(progressRows)) {
+      progressRows.forEach(r => {
+        progressByQuestion[String(r.order_num)] = Number(r.c || 0);
+      });
+    }
     const payload = {
       sessionId: String(sessionId),
       started: Boolean(state.started),
@@ -2433,30 +2482,35 @@ app.post("/api/live-quiz/:id/scan", async (req, res) => {
     return res.status(400).json({ error: "questionNo and qrRaw are required" });
   }
   try {
-    liveQuizCheckpoint("POST /api/live-quiz/:id/scan:incoming", {
-      sessionId,
-      questionNo,
-      qrRaw: String(qrRaw).slice(0, 48),
-    });
-    const runtimeState = getRuntimeState(sessionId);
-    if (!runtimeState.started) {
-      liveQuizCheckpoint("POST /api/live-quiz/:id/scan:reject", { reason: "capture_not_started", sessionId });
-      return res.status(400).json({ error: "Quiz capture has not started yet" });
-    }
     const qNo = Number(questionNo);
-    if (!qNo || qNo < 1) return res.status(400).json({ error: "questionNo must be >= 1" });
     const raw = String(qrRaw).trim().toUpperCase();
     const m = raw.match(/^(?:STU)?([0-9]+)_([A-D])$/);
     if (!m) {
       liveQuizCheckpoint("POST /api/live-quiz/:id/scan:reject", { reason: "invalid_qr_format", raw: raw.slice(0, 32) });
       return res.status(400).json({ error: "Invalid QR format. Expected <ROLL_NUMBER>_<A|B|C|D>" });
     }
-    const rollNo = Number(m[1]);
+    const rollNo = m[1];
     const selectedOption = m[2];
-    const [sessionRows] = await db.query("SELECT id, class_id, status FROM live_quiz_sessions WHERE id = ? LIMIT 1", [sessionId]);
+
+    const runtimeState = getRuntimeState(sessionId);
+    if (!runtimeState.started) {
+      liveQuizCheckpoint("POST /api/live-quiz/:id/scan:reject", { reason: "capture_not_started", sessionId });
+      return res.status(400).json({ error: "Quiz capture has not started yet" });
+    }
+
+    // 1. Fetch Session and linked Live Session in one go if possible, or consolidated
+    const [sessionRows] = await db.query(
+      "SELECT lqs.id, lqs.class_id, lqs.status, lqs.live_session_id, ls.session_date " +
+      "FROM live_quiz_sessions lqs " +
+      "LEFT JOIN live_sessions ls ON ls.id = lqs.live_session_id " +
+      "WHERE lqs.id = ? LIMIT 1",
+      [sessionId]
+    );
     const session = Array.isArray(sessionRows) && sessionRows[0] ? sessionRows[0] : null;
     if (!session) return res.status(404).json({ error: "Live quiz session not found" });
     if (String(session.status || "").toLowerCase() !== "active") return res.status(400).json({ error: "Session is not active" });
+
+    // 2. Fetch Question
     const [questionRows] = await db.query(
       "SELECT id, correct_option FROM live_quiz_questions WHERE live_quiz_session_id = ? ORDER BY order_num, id",
       [sessionId]
@@ -2464,66 +2518,52 @@ app.post("/api/live-quiz/:id/scan", async (req, res) => {
     const qIndex = qNo - 1;
     const question = Array.isArray(questionRows) && questionRows[qIndex] ? questionRows[qIndex] : null;
     if (!question) return res.status(400).json({ error: `Question ${qNo} not found in this session` });
+    
+    // 3. Fetch Student
     const [studentRows] = await db.query(
       "SELECT id, first_name, last_name FROM students WHERE section_id = ? AND roll_no = ? LIMIT 1",
       [Number(session.class_id), rollNo]
     );
     const student = Array.isArray(studentRows) && studentRows[0] ? studentRows[0] : null;
     if (!student) return res.status(404).json({ error: "Student not found for this class and roll number" });
-    const [liveSessionLinkRows] = await db.query("SELECT live_session_id FROM live_quiz_sessions WHERE id = ? LIMIT 1", [sessionId]);
-    const liveSessionId = Array.isArray(liveSessionLinkRows) && liveSessionLinkRows[0] && liveSessionLinkRows[0].live_session_id != null
-      ? Number(liveSessionLinkRows[0].live_session_id)
-      : null;
-    let sessionDate = new Date().toISOString().slice(0, 10);
-    if (liveSessionId) {
-      const [lsRows] = await db.query("SELECT session_date FROM live_sessions WHERE id = ? LIMIT 1", [liveSessionId]);
-      if (Array.isArray(lsRows) && lsRows[0] && lsRows[0].session_date) {
-        sessionDate = toDateKey(lsRows[0].session_date);
-      }
-    }
-    const attendanceDate = await getQuizAttendanceDate(db, Number(session.class_id), liveSessionId, sessionDate);
+
+    // 4. Verify Attendance
+    const sessionDate = session.session_date ? toDateKey(session.session_date) : new Date().toISOString().slice(0, 10);
+    const attendanceDate = await getQuizAttendanceDate(db, Number(session.class_id), session.live_session_id, sessionDate);
     const [attRows] = await db.query(
       "SELECT status FROM attendance WHERE class_id = ? AND student_id = ? AND attendance_date = ? LIMIT 1",
       [Number(session.class_id), Number(student.id), attendanceDate]
     );
     if (!Array.isArray(attRows) || !attRows[0]) {
-      liveQuizCheckpoint("POST /api/live-quiz/:id/scan:reject", {
-        reason: "no_attendance_row",
-        classId: Number(session.class_id),
-        studentId: Number(student.id),
-        attendanceDate,
-        rollNo,
-      });
       return res.status(400).json({ error: "Attendance not found for student on this session date" });
     }
     if (String(attRows[0].status || "").toLowerCase() !== "present") {
-      liveQuizCheckpoint("POST /api/live-quiz/:id/scan:reject", { reason: "student_absent", studentId: Number(student.id), attendanceDate });
       return res.status(400).json({ error: "Student is absent and not eligible for quiz today" });
     }
+
+    // 5. Duplicate Check
     const [dupRows] = await db.query(
       "SELECT id FROM live_quiz_answers WHERE live_quiz_session_id = ? AND question_id = ? AND student_id = ? LIMIT 1",
       [sessionId, Number(question.id), Number(student.id)]
     );
     if (Array.isArray(dupRows) && dupRows[0]) {
-      liveQuizCheckpoint("POST /api/live-quiz/:id/scan:reject", { reason: "duplicate", studentId: Number(student.id), questionNo: qNo });
       return res.status(409).json({ error: "Duplicate scan for this student/question", duplicate: true });
     }
+
+    // 6. Insert Answer
     const correctOption = String(question.correct_option || "A").toUpperCase().charAt(0);
     const isCorrect = selectedOption === correctOption ? 1 : 0;
     await db.query(
       "INSERT INTO live_quiz_answers (live_quiz_session_id, student_id, question_id, selected_option, is_correct) VALUES (?, ?, ?, ?, ?)",
       [sessionId, Number(student.id), Number(question.id), selectedOption, isCorrect]
     );
+
+    // 7. Update Runtime State (Optimized: just increment if possible)
+    const qKey = String(qNo);
+    if (!runtimeState.progressByQuestion[qKey]) runtimeState.progressByQuestion[qKey] = 0;
+    runtimeState.progressByQuestion[qKey] += 1;
+
     const studentName = [student.first_name, student.last_name].filter(Boolean).join(" ").trim() || `Student ${student.id}`;
-    liveQuizCheckpoint("POST /api/live-quiz/:id/scan:ok", {
-      sessionId,
-      questionNo: qNo,
-      studentId: Number(student.id),
-      rollNo,
-      attendanceDate,
-      selectedOption,
-      isCorrect: isCorrect === 1,
-    });
     res.json({
       ok: true,
       sessionId: String(sessionId),
@@ -2580,7 +2620,7 @@ app.post("/api/live-quiz/:id/submit-bulk", async (req, res) => {
       sessionDate
     );
     const [presentRows] = await db.query(
-      "SELECT student_id FROM attendance WHERE class_id = ? AND date = ? AND status = 'present'",
+      "SELECT student_id FROM attendance WHERE class_id = ? AND attendance_date = ? AND status = 'present'",
       [Number(session.class_id), attendanceDate]
     );
     const presentSet = new Set((presentRows || []).map((r) => Number(r.student_id)));
@@ -2661,7 +2701,6 @@ app.post("/api/live-quiz/:id/submit-bulk", async (req, res) => {
     res.status(500).json({ error: String(err.message) });
   }
 });
-
 app.get("/live-quiz-scan", (req, res) => {
   const session = String(req.query.session || "").trim();
   if (!session) {
@@ -2684,7 +2723,6 @@ app.get("/live-quiz-scan", (req, res) => {
       .ok { color: #166534; font-size: 13px; margin-top: 6px; }
       .err { color: #b91c1c; font-size: 13px; margin-top: 6px; }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
   </head>
   <body>
     <div class="card">
@@ -2699,7 +2737,6 @@ app.get("/live-quiz-scan", (req, res) => {
       <button id="startCamBtn">Start camera</button>
       <button id="stopCamBtn" style="background:#6b7280;">Stop camera</button>
     </div>
-    <canvas id="canvas" style="display:none;"></canvas>
     <div class="card">
       <label class="muted">Question number</label>
       <input id="qno" type="number" min="1" value="1" />
@@ -2861,9 +2898,15 @@ app.get("/live-quiz-scan", (req, res) => {
         if (!video) return;
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           msgEl.className = "err";
-          msgEl.textContent = "Camera access failed. Note: Mobile browsers REQUIRE an HTTPS connection for camera access. Try using ngrok for a secure tunnel.";
+          msgEl.textContent = "Camera not supported on this browser.";
           return;
         }
+        if (!("BarcodeDetector" in window)) {
+          msgEl.className = "err";
+          msgEl.textContent = "QR scanning requires BarcodeDetector support in this browser.";
+          return;
+        }
+        detector = new BarcodeDetector({ formats: ["qr_code"] });
         cameraRunning = true;
         try {
           cameraStream = await navigator.mediaDevices.getUserMedia({
@@ -2875,59 +2918,46 @@ app.get("/live-quiz-scan", (req, res) => {
         } catch (e) {
           cameraRunning = false;
           msgEl.className = "err";
-          msgEl.textContent = "Camera permission denied or not available. (Check if site is HTTPS)";
+          msgEl.textContent = e && e.message ? e.message : "Camera permission denied";
           return;
         }
-
-        const canvas = document.getElementById("canvas");
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
         const scanFrame = async () => {
           if (!cameraRunning) return;
           const v = document.getElementById("video");
           if (!v || v.readyState < 2) {
-            requestAnimationFrame(scanFrame);
+            setTimeout(scanFrame, 250);
             return;
           }
           try {
-            if (v.videoWidth > 0 && v.videoHeight > 0) {
-              canvas.width = v.videoWidth;
-              canvas.height = v.videoHeight;
-              ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
-              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-              const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                inversionAttempts: "dontInvert",
-              });
-
-              if (code && code.data) {
-                const raw = code.data;
-                const now = Date.now();
-                if (raw && (raw !== lastAutoRaw || (now - lastAutoAt) > 1500)) {
-                  lastAutoRaw = raw;
-                  lastAutoAt = now;
-                  const parsed = parseStudentQr(raw);
-                  if (parsed) {
-                    try {
-                      await bufferQr(qnoValue(), raw);
-                      document.getElementById("qr").value = "";
-                    } catch (e) {
-                      msgEl.className = "muted";
-                      msgEl.textContent = e && e.message ? e.message : "Scan ignored";
-                    }
-                  } else {
+            const barcodes = await detector.detect(v);
+            if (barcodes && barcodes.length > 0) {
+              const raw = barcodes[0].rawValue;
+              const now = Date.now();
+              if (raw && (raw !== lastAutoRaw || (now - lastAutoAt) > 1500)) {
+                lastAutoRaw = raw;
+                lastAutoAt = now;
+                const parsed = parseStudentQr(raw);
+                if (parsed) {
+                  try {
+                    await bufferQr(qnoValue(), raw);
+                    document.getElementById("qr").value = "";
+                  } catch (e) {
+                    // duplicates / not started are normal; don't spam
                     msgEl.className = "muted";
-                    msgEl.textContent = "Scanned invalid QR: " + String(raw).slice(0, 20);
+                    msgEl.textContent = e && e.message ? e.message : "Scan ignored";
                   }
+                } else {
+                  msgEl.className = "muted";
+                  msgEl.textContent = "Scanned invalid QR";
                 }
               }
             }
-          } catch (err) {
-            console.error("Scan error:", err);
-          }
-          requestAnimationFrame(scanFrame);
+          } catch (_) {}
+          setTimeout(scanFrame, 250);
         };
 
-        requestAnimationFrame(scanFrame);
+        scanFrame();
       }
 
       function stopCamera() {
@@ -3017,7 +3047,7 @@ app.get("/api/live-quiz/:id/leaderboard", async (req, res) => {
   if (!sessionId) return res.status(400).json({ error: "id required" });
   try {
     const [rows] = await db.query(
-      "SELECT student_id, SUM(is_correct) AS score FROM live_quiz_answers WHERE live_quiz_session_id = ? GROUP BY student_id ORDER BY score DESC LIMIT 5",
+      "SELECT student_id, SUM(is_correct) AS score FROM live_quiz_answers WHERE live_quiz_session_id = ? GROUP BY student_id ORDER BY score DESC LIMIT 20",
       [sessionId]
     );
     const studentIds = (rows || []).map((r) => r.student_id).filter(Boolean);
@@ -3266,7 +3296,7 @@ app.post("/api/attendance", async (req, res) => {
 });
 
 // --- AI: Recommendations & Assistant ---
-const AI_SERVER_URL = process.env.VITE_AI_API_URL || "http://localhost:8001";
+const AI_SERVER_URL = process.env.VITE_AI_API_URL || "http://187.127.158.229:8001";
 
 app.post("/api/ai/recommend", async (req, res) => {
   const { topic, subject, grade } = req.body || {};

@@ -159,3 +159,47 @@ export async function createAdmin(req, res) {
     res.status(500).json({ error: String(err.message) });
   }
 }
+
+/**
+ * Subject-wise Performance Data
+ */
+export async function getSubjectPerformance(req, res) {
+  const db = getPool();
+  try {
+    // 1. Average Quiz Scores per Subject
+    const [scoreStats] = await db.query(`
+      SELECT 
+        s.subject_name as subject,
+        ROUND(AVG(sm.score * 100 / sm.total), 1) as avgScore
+      FROM student_marks sm
+      JOIN chapters c ON c.id = sm.chapter_id
+      JOIN subjects s ON s.id = c.subject_id
+      GROUP BY s.id, s.subject_name
+    `);
+
+    // 2. Session Count per Subject
+    const [sessionStats] = await db.query(`
+      SELECT 
+        s.subject_name as subject,
+        COUNT(*) as sessionCount
+      FROM live_sessions ls
+      JOIN subjects s ON s.id = ls.subject_id
+      WHERE ls.status = 'completed'
+      GROUP BY s.id, s.subject_name
+    `);
+
+    // Merge results
+    const performance = scoreStats.map(stat => {
+      const session = sessionStats.find(s => s.subject === stat.subject);
+      return {
+        ...stat,
+        sessions: session ? session.sessionCount : 0
+      };
+    });
+
+    res.json(performance);
+  } catch (err) {
+    console.error("Subject performance error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}

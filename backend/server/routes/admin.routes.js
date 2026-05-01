@@ -6,7 +6,8 @@ import {
   getAnnouncements, 
   getTeacherLogs,
   getAdmins,
-  createAdmin
+  createAdmin,
+  getSubjectPerformance
 } from "../controllers/admin_management.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -23,5 +24,6 @@ router.get("/announcements", getAnnouncements);
 router.get("/logs/teachers", getTeacherLogs);
 router.get("/management", getAdmins);
 router.post("/management", createAdmin);
+router.get("/performance/subjects", getSubjectPerformance);
 
 export default router;
