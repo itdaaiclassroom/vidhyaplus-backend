@@ -122,7 +122,7 @@ def search_youtube(query: str) -> list:
                 q=f"{query} explanation",
                 part="snippet",
                 type="video",
-                maxResults=20,
+                maxResults=5,
                 order="relevance",
                 safeSearch="moderate",
                 relevanceLanguage="en",
@@ -158,7 +158,7 @@ def search_youtube(query: str) -> list:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             with DDGS() as ddgs:
-                results = ddgs.text(f"site:youtube.com/watch {query} class explanation", max_results=15)
+                results = ddgs.text(f"site:youtube.com/watch {query} class explanation", max_results=5)
         for r in results:
             url = (r.get("href") or "").strip()
             if not url.startswith("https://www.youtube.com/watch?v="):
@@ -214,7 +214,7 @@ def search_resources(query: str) -> list:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             with DDGS() as ddgs:
-                results = ddgs.text(f"{query} notes pdf SSC Telangana Board", max_results=8)
+                results = ddgs.text(f"{query} notes pdf SSC Telangana Board", max_results=4)
         for r in results:
             url = (r.get("href") or "").strip()
             title = (r.get("title") or "").strip()
@@ -275,7 +275,7 @@ def recommend(q: RecommendQuery):
     query = build_search_query(q.topic, q.subject, q.grade, q.chapter, q.query)
     print(f"[recommendations] Query: {query}")
 
-    timeout_s = float(os.environ.get("RECO_TIMEOUT_SECONDS") or "15")
+    timeout_s = float(os.environ.get("RECO_TIMEOUT_SECONDS") or "4")
 
     # Run YouTube search synchronously (most important)
     videos = []

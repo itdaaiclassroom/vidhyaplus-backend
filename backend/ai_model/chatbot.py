@@ -44,7 +44,7 @@ INDEXES_DIR.mkdir(exist_ok=True)
 # Config from .env
 # ---------------------------------------------------------------------------
 
-_ollama_model  = (os.environ.get("OLLAMA_MODEL")          or "mistral").strip()
+_ollama_model  = (os.environ.get("OLLAMA_MODEL")          or "llama3.2:1b").strip()
 _hf_model      = (os.environ.get("CHATBOT_MODEL")         or "distilgpt2").strip()
 _hf_task       = (os.environ.get("CHATBOT_TASK")          or "text-generation").strip()
 _hf_fallback   = (os.environ.get("CHATBOT_FALLBACK_MODEL") or "distilgpt2").strip()
@@ -218,8 +218,8 @@ def call_ollama(prompt: str, max_tokens: int = 500) -> Optional[str]:
     
     for attempt in [1, 2]:
         try:
-            # 120s timeout for VPS performance
-            with httpx.Client(timeout=120.0) as client:
+            # 45s timeout for VPS performance (down from 120s to fail fast)
+            with httpx.Client(timeout=45.0) as client:
                 resp = client.post(
                     "http://127.0.0.1:11434/api/generate",
                     json={
@@ -473,6 +473,11 @@ def _parse_mcqs(text: str, max_q: int = 10) -> List[dict]:
         part = part.strip()
         if not part or len(part) < 15:
             continue
+            
+        # Skip preamble: a valid question must have at least an Option A
+        if not re.search(r"\n\s*[(]?[A][.)\]\-]+", "\n" + part, re.IGNORECASE):
+            continue
+
 
         opts = {"A": "", "B": "", "C": "", "D": ""}
         correct = "A"
@@ -719,7 +724,7 @@ def generate_quiz(body: GenerateQuizBody):
 
     if _ollama_up:
         prompt = f"""Generate exactly {count} multiple-choice questions (MCQ) for Class {grade} topic: {topic} ({subject}).
-Use the context below. Each question MUST have exactly 4 options (A, B, C, D) and one correct answer.
+Use the context below. Each question MUST have exactly 4 options (A, B, C, D) and one correct answer. Keep explanations extremely short (max 10 words) to save time.
 
 Format STRICTLY like this for each question:
 Question 1: [question text]
@@ -734,14 +739,15 @@ Rules:
 - Vary difficulty: mix easy, medium, hard.
 - Do NOT repeat questions.
 - Base questions on the context ONLY.
+- DO NOT add any conversational preamble. Start directly with "Question 1:".
 
 Context:
 {context or f"Topic: {topic}. Subject: {subject}. Grade: {grade}."}
 
 Generate {count} questions now:"""
 
-        print(f"[quiz] Calling Ollama (model={_ollama_model}, max_tokens={min(2500, count * 150)})...")
-        ollama_raw = call_ollama(prompt, max_tokens=min(2500, count * 150))
+        print(f"[quiz] Calling Ollama (model={_ollama_model}, max_tokens={min(1500, count * 100)})...")
+        ollama_raw = call_ollama(prompt, max_tokens=min(1500, count * 100))
 
         if ollama_raw:
             print(f"[quiz] Ollama responded: {len(ollama_raw)} chars. Parsing MCQs...")

@@ -70,7 +70,7 @@ def _get_pdf_reader(path_or_url: str) -> PdfReader:
                 "Accept-Language": "en-US,en;q=0.5",
                 "Referer": "https://www.google.com/"
             }
-            response = httpx.get(path_or_url, headers=headers, follow_redirects=True, timeout=300.0, verify=False)
+            response = httpx.get(path_or_url, headers=headers, follow_redirects=True, timeout=30.0, verify=False)
             if response.status_code != 200:
                 print(f"[segmentation] URL fetch failed with HTTP {response.status_code} for {path_or_url}")
                 raise HTTPException(
