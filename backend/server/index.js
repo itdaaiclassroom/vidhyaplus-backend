@@ -1999,7 +1999,7 @@ function normalizeQuizQuestions(rawQuestions) {
     );
 }
 
-async function fetchQuizQuestions(topicName, subjectName, grade = 10, meta = {}) {
+async function fetchQuizQuestions(topicName, subjectName, grade = 10, count = 10, meta = {}) {
   const topicIdNum = meta && meta.topicId != null ? Number(meta.topicId) : null;
   const subjectText = String(subjectName || "").toLowerCase();
   const topicText = String(topicName || "").toLowerCase();
@@ -2009,7 +2009,12 @@ async function fetchQuizQuestions(topicName, subjectName, grade = 10, meta = {})
     const aiRes = await fetch("http://187.127.158.229:8001/generate_quiz", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic_name: topicName, subject: subjectName, grade }),
+      body: JSON.stringify({
+        topic_name: topicName,
+        subject: subjectName,
+        grade: Number(grade) || 10,
+        count: Number(count) || 10
+      }),
     });
     if (aiRes.ok) {
       const data = await aiRes.json();
@@ -2042,14 +2047,17 @@ async function fetchQuizQuestions(topicName, subjectName, grade = 10, meta = {})
 // Many quiz UIs call POST /generate_quiz directly (Render quiz service style).
 // This build returns static/syllabus MCQs only (no external LLM).
 app.post("/generate_quiz", async (req, res) => {
-  const { topic_name, topicName, subject, subjectName, grade } = req.body || {};
+  const { topic_name, topicName, subject, subjectName, grade, count } = req.body || {};
   const t = String(topic_name || topicName || "").trim();
   const s = String(subject || subjectName || "").trim();
   const gRaw = grade != null ? Number(grade) : 10;
   const g = Number.isFinite(gRaw) ? gRaw : 10;
+  const cRaw = count != null ? Number(count) : 10;
+  const c = Number.isFinite(cRaw) ? cRaw : 10;
+
   if (!t) return res.status(400).json({ error: "topic_name is required" });
   try {
-    const questions = await fetchQuizQuestions(t, s || "Subject", g);
+    const questions = await fetchQuizQuestions(t, s || "Subject", g, c);
     // Normalize to the expected payload shape.
     const normalized = (questions || []).slice(0, 15).map((q, i) => ({
       question_text: String(q.question_text || q.questionText || `Question ${i + 1}`).slice(0, 2000),
@@ -2142,7 +2150,11 @@ app.post("/api/live-quiz", async (req, res) => {
 
     const subjectRow = await db.query("SELECT name FROM subjects WHERE id = ?", [Number(subjectId)]).then(([r]) => r && r[0]).catch(() => null);
     const subjectName = subjectRow ? subjectRow.name : "Subject";
-    const questions = await fetchQuizQuestions(topicName, subjectName, numQuestionsToCreate, { topicId, chapterId, subjectId });
+
+    const classRow = await db.query("SELECT grade_id FROM sections WHERE id = ?", [Number(classId)]).then(([r]) => r && r[0]).catch(() => null);
+    const grade = classRow ? classRow.grade_id : 10;
+
+    const questions = await fetchQuizQuestions(topicName, subjectName, grade, numQuestionsToCreate, { topicId, chapterId, subjectId });
     const fallbackQuestions = Array.from({ length: numQuestionsToCreate }).map((_, i) => ({
       question_text: `Question ${i + 1}: ${String(topicName)} (generated fallback)`,
       option_a: "A",
