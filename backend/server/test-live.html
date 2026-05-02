@@ -2,204 +2,294 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Live Class Sandbox</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VidhyaPlus Live Test</title>
     <script src="/socket.io/socket.io.js"></script>
-    <script src="https://unpkg.com/mediasoup-client@3.6.101/umd/mediasoup-client.js"></script>
     <style>
-        body { font-family: sans-serif; padding: 20px; }
-        .container { display: flex; gap: 20px; }
-        .panel { border: 1px solid #ccc; padding: 10px; width: 50%; }
-        video { width: 100%; background: black; }
-        button { padding: 10px; margin: 5px; cursor: pointer; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            width: 100%;
+            max-width: 1000px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .panel {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+        video {
+            width: 100%;
+            background: #000;
+            border-radius: 8px;
+            aspect-ratio: 16/9;
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: #3b82f6; color: white; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-secondary { background: #10b981; color: white; }
+        .btn-secondary:hover { background: #059669; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        #status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 6px;
+            background: #334155;
+            width: 100%;
+            max-width: 1000px;
+            font-family: monospace;
+            font-size: 14px;
+            height: 150px;
+            overflow-y: auto;
+        }
     </style>
 </head>
 <body>
-    <h1>Mediasoup + Socket.io Sandbox</h1>
-    <p>Open this page in two separate browser tabs to test the broadcast vs viewing functionality.</p>
+    <h1>VidhyaPlus Live Streaming Test</h1>
     
     <div class="container">
-        <!-- TEACHER -->
         <div class="panel">
-            <h2>Teacher Broadcast</h2>
-            <button id="btn-start">1. Start Broadcast</button>
-            <button id="btn-stop" disabled>Stop Broadcast</button>
-            <video id="local-video" autoplay muted playsinline></video>
-            <p id="teacher-status"></p>
+            <h2>Teacher (Broadcaster)</h2>
+            <video id="localVideo" autoplay playsinline muted></video>
+            <div style="display: flex; gap: 10px;">
+                <button id="btnStart" class="btn-primary">Start Broadcast</button>
+                <button id="btnStop" class="btn-danger" style="display:none;">Stop Broadcast</button>
+            </div>
         </div>
-
-        <!-- ADMIN -->
+        
         <div class="panel">
-            <h2>Admin Viewer</h2>
-            <button id="btn-watch">1. Watch Stream</button>
-            <video id="remote-video" autoplay playsinline></video>
-            <p id="admin-status"></p>
+            <h2>Admin (Viewer)</h2>
+            <video id="remoteVideo" autoplay playsinline></video>
+            <div style="display: flex; gap: 10px;">
+                <button id="btnWatch" class="btn-secondary">Watch Stream</button>
+                <button id="btnDisconnect" class="btn-danger" style="display:none;">Disconnect</button>
+            </div>
         </div>
     </div>
 
-    <script>
+    <div id="status">--- Logs ---</div>
+
+    <script type="module">
+        import * as mediasoupClient from 'https://esm.sh/mediasoup-client@3';
+
         const socket = io();
         let device;
         let producerTransport;
         let consumerTransport;
-        const ROOM_ID = "1_10_A"; // Dummy schoolId_class_section
 
-        const localVideo = document.getElementById('local-video');
-        const remoteVideo = document.getElementById('remote-video');
-        const teacherStatus = document.getElementById('teacher-status');
-        const adminStatus = document.getElementById('admin-status');
+        const ROOM_ID = "1_10_A";
+        const logPanel = document.getElementById('status');
 
-        // ==== COMMON ====
-        async function loadDevice(routerRtpCapabilities) {
-            device = new mediasoupClient.Device();
-            await device.load({ routerRtpCapabilities });
+        function log(msg) {
+            const time = new Date().toLocaleTimeString();
+            logPanel.innerHTML += `<div>[${time}] ${msg}</div>`;
+            logPanel.scrollTop = logPanel.scrollHeight;
+            console.log(msg);
         }
 
-        // ==== TEACHER FLOW ====
-        document.getElementById('btn-start').onclick = async () => {
-            teacherStatus.innerText = "Requesting camera...";
-            let stream;
-            
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                return teacherStatus.innerText = "Camera error: navigator.mediaDevices is undefined. Are you using http://localhost:5000? Browsers require HTTPS or Localhost for camera access.";
-            }
+        socket.on('connect', () => log('Socket connected: ' + socket.id));
+        socket.on('disconnect', () => log('Socket disconnected'));
 
+        async function loadDevice(routerRtpCapabilities) {
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                localVideo.srcObject = stream;
-            } catch(e) {
-                return teacherStatus.innerText = "Camera error: " + e.message;
+                device = new mediasoupClient.Device();
+                await device.load({ routerRtpCapabilities });
+                log('Device loaded');
+            } catch (err) {
+                log('Error loading device: ' + err.message);
+            }
+        }
+
+        // ---------- TEACHER ----------
+
+        document.getElementById('btnStart').onclick = async () => {
+            try {
+                log('Requesting media...');
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById('localVideo').srcObject = stream;
+                log('Media stream acquired');
+
+                socket.emit('start-stream', { roomId: ROOM_ID }, (res) => {
+                    log('Stream started on server');
+
+                    socket.emit('get-router-rtp-capabilities', { roomId: ROOM_ID }, async (res) => {
+                        await loadDevice(res.rtpCapabilities);
+
+                        socket.emit('create-webrtc-transport', { roomId: ROOM_ID }, async (res) => {
+                            log('Transport created for producer');
+                            producerTransport = device.createSendTransport(res.params);
+
+                            producerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                                socket.emit('connect-transport', {
+                                    transportId: producerTransport.id,
+                                    dtlsParameters
+                                }, (res) => {
+                                    if (res.error) errback(res.error);
+                                    else callback();
+                                });
+                            });
+
+                            producerTransport.on('produce', (params, cb) => {
+                                log('Producing ' + params.kind);
+                                socket.emit('produce', {
+                                    roomId: ROOM_ID,
+                                    transportId: producerTransport.id,
+                                    kind: params.kind,
+                                    rtpParameters: params.rtpParameters
+                                }, ({ id }) => {
+                                    log('Producer created: ' + id);
+                                    cb({ id });
+                                });
+                            });
+
+                            log('Starting production...');
+                            await producerTransport.produce({ track: stream.getVideoTracks()[0] });
+                            if (stream.getAudioTracks().length > 0) {
+                                await producerTransport.produce({ track: stream.getAudioTracks()[0] });
+                            }
+                            log('Broadcasting live!');
+                            document.getElementById('btnStart').style.display = 'none';
+                            document.getElementById('btnStop').style.display = 'block';
+                        });
+                    });
+                });
+            } catch (err) {
+                log('Teacher error: ' + err.message);
+            }
+        };
+
+        document.getElementById('btnStop').onclick = async () => {
+            log('Stopping broadcast...');
+            socket.emit('stop-stream', { roomId: ROOM_ID });
+            
+            if (producerTransport) {
+                producerTransport.close();
+                producerTransport = null;
             }
 
-            teacherStatus.innerText = "Connecting to SFU...";
-            
-            socket.emit('start-stream', { roomId: ROOM_ID, schoolId: 1, classId: 10, sectionId: 'A', teacherId: 99 }, async () => {
-                console.log("start-stream success");
-                teacherStatus.innerText = "Getting RTP capabilities...";
-                
-                // 1. Get RTP Capabilities
-                socket.emit('get-router-rtp-capabilities', { roomId: ROOM_ID }, async (res) => {
-                    console.log("rtp capabilities received", res);
-                    if (res.error) return teacherStatus.innerText = "RTP error: " + res.error;
-                    
-                    await loadDevice(res.rtpCapabilities);
-                    teacherStatus.innerText = "Creating transport...";
+            const localVideo = document.getElementById('localVideo');
+            if (localVideo.srcObject) {
+                localVideo.srcObject.getTracks().forEach(track => track.stop());
+                localVideo.srcObject = null;
+            }
 
-                    // 2. Create WebRTC Transport
-                    socket.emit('create-webrtc-transport', { roomId: ROOM_ID }, async (res) => {
-                        console.log("transport created", res);
-                        if (res.error) return teacherStatus.innerText = "Transport error: " + res.error;
-                        
-                        producerTransport = device.createSendTransport(res.params);
-                        
-                        producerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
-                            socket.emit('connect-transport', { transportId: producerTransport.id, dtlsParameters }, (res) => {
-                                if (res.error) errback(res.error); else callback();
-                            });
-                        });
-
-                        producerTransport.on('produce', async (parameters, callback, errback) => {
-                            socket.emit('produce', {
-                                roomId: ROOM_ID,
-                                transportId: producerTransport.id,
-                                kind: parameters.kind,
-                                rtpParameters: parameters.rtpParameters,
-                            }, (res) => {
-                                if (res.error) errback(res.error); else callback({ id: res.id });
-                            });
-                        });
-
-                        // 3. Produce Video
-                        const videoTrack = stream.getVideoTracks()[0];
-                        await producerTransport.produce({ track: videoTrack });
-                        
-                        // 3b. Produce Audio
-                        const audioTrack = stream.getAudioTracks()[0];
-                        if(audioTrack) await producerTransport.produce({ track: audioTrack });
-
-                        teacherStatus.innerText = "LIVE (Producing audio/video)";
-                        document.getElementById('btn-start').disabled = true;
-                        document.getElementById('btn-stop').disabled = false;
-                    });
-                });
-            });
+            document.getElementById('btnStart').style.display = 'block';
+            document.getElementById('btnStop').style.display = 'none';
+            log('Broadcast stopped');
         };
 
-        document.getElementById('btn-stop').onclick = () => {
-            socket.emit('stop-stream', { roomId: ROOM_ID });
-            teacherStatus.innerText = "Stopped";
-            document.getElementById('btn-start').disabled = false;
-            document.getElementById('btn-stop').disabled = true;
-        };
-
-        // ==== ADMIN FLOW ====
-        document.getElementById('btn-watch').onclick = async () => {
-            adminStatus.innerText = "Joining room...";
-            
-            socket.emit('watch-stream', { roomId: ROOM_ID }, async (res) => {
-                if(res.error) return adminStatus.innerText = res.error;
-                
-                adminStatus.innerText = "Getting RTP capabilities...";
-                
-                socket.emit('get-router-rtp-capabilities', { roomId: ROOM_ID }, async (resCaps) => {
-                    console.log("admin rtp capabilities received", resCaps);
-                    if(resCaps.error) return adminStatus.innerText = "RTP error: " + resCaps.error;
-
-                    if(!device) await loadDevice(resCaps.rtpCapabilities);
-
-                    adminStatus.innerText = "Creating receive transport...";
-
-                    socket.emit('create-webrtc-transport', { roomId: ROOM_ID }, async (resTransport) => {
-                        console.log("admin transport created", resTransport);
-                        if(resTransport.error) return adminStatus.innerText = "Transport error: " + resTransport.error;
-
-                        consumerTransport = device.createRecvTransport(resTransport.params);
-                        
-                        consumerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
-                            socket.emit('connect-transport', { transportId: consumerTransport.id, dtlsParameters }, (resConnect) => {
-                                if (resConnect.error) errback(resConnect.error); else callback();
-                            });
-                        });
-
-                        // Consume active producers
-                        for(let producerId of res.producerIds) {
-                            await consumeTrack(producerId);
-                        }
-                        adminStatus.innerText = "Watching stream!";
-                    });
-                });
-            });
-        };
-
-        socket.on('new-producer', async ({ producerId, kind }) => {
-            if(consumerTransport) await consumeTrack(producerId);
-        });
-
+        // ---------- ADMIN ----------
+        
         socket.on('stream-stopped', () => {
-            adminStatus.innerText = "Stream ended by teacher.";
-            remoteVideo.srcObject = null;
+            log('Teacher stopped the stream');
+            disconnectAdmin();
         });
 
-        async function consumeTrack(producerId) {
-            socket.emit('consume', {
-                roomId: ROOM_ID,
-                transportId: consumerTransport.id,
-                producerId: producerId,
-                rtpCapabilities: device.rtpCapabilities,
-            }, async (res) => {
-                if (res.error) return console.error(res.error);
-                
-                const consumer = await consumerTransport.consume({
-                    id: res.params.id,
-                    producerId: res.params.producerId,
-                    kind: res.params.kind,
-                    rtpParameters: res.params.rtpParameters
+        function disconnectAdmin() {
+            if (consumerTransport) {
+                consumerTransport.close();
+                consumerTransport = null;
+            }
+
+            const remoteVideo = document.getElementById('remoteVideo');
+            remoteVideo.srcObject = null;
+
+            document.getElementById('btnWatch').style.display = 'block';
+            document.getElementById('btnDisconnect').style.display = 'none';
+            log('Disconnected from stream');
+        }
+
+        document.getElementById('btnDisconnect').onclick = disconnectAdmin;
+
+        document.getElementById('btnWatch').onclick = async () => {
+            try {
+                log('Requesting stream info...');
+                socket.emit('watch-stream', { roomId: ROOM_ID }, async (res) => {
+                    if (res.error) return log('Watch error: ' + res.error);
+                    
+                    const { producerIds } = res;
+                    log('Found producers: ' + producerIds.length);
+
+                    socket.emit('get-router-rtp-capabilities', { roomId: ROOM_ID }, async (res) => {
+                        await loadDevice(res.rtpCapabilities);
+
+                        socket.emit('create-webrtc-transport', { roomId: ROOM_ID }, async (res) => {
+                            log('Transport created for consumer');
+                            consumerTransport = device.createRecvTransport(res.params);
+
+                            consumerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                                socket.emit('connect-transport', {
+                                    transportId: consumerTransport.id,
+                                    dtlsParameters
+                                }, (res) => {
+                                    if (res.error) errback(res.error);
+                                    else callback();
+                                });
+                            });
+
+                            for (let id of producerIds) {
+                                await consume(id);
+                            }
+
+                            document.getElementById('btnWatch').style.display = 'none';
+                            document.getElementById('btnDisconnect').style.display = 'block';
+                        });
+                    });
                 });
+            } catch (err) {
+                log('Admin error: ' + err.message);
+            }
+        };
 
-                const stream = remoteVideo.srcObject || new MediaStream();
-                stream.addTrack(consumer.track);
-                remoteVideo.srcObject = stream;
+        async function consume(producerId) {
+            return new Promise((resolve) => {
+                log('Consuming producer: ' + producerId);
+                socket.emit('consume', {
+                    roomId: ROOM_ID,
+                    transportId: consumerTransport.id,
+                    producerId,
+                    rtpCapabilities: device.rtpCapabilities
+                }, async ({ params, error }) => {
+                    if (error) {
+                        log('Consume error: ' + error);
+                        return resolve();
+                    }
 
-                socket.emit('resume-consumer', { consumerId: consumer.id }, () => {});
+                    const consumer = await consumerTransport.consume(params);
+                    log('Consumer created: ' + consumer.id);
+
+                    const remoteVideo = document.getElementById('remoteVideo');
+                    const stream = remoteVideo.srcObject || new MediaStream();
+                    stream.addTrack(consumer.track);
+                    remoteVideo.srcObject = stream;
+                    log('Track added to stream');
+
+                    socket.emit('resume-consumer', { consumerId: consumer.id }, () => {
+                        log('Consumer resumed');
+                        resolve();
+                    });
+                });
             });
         }
     </script>
