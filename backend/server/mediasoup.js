@@ -2,14 +2,14 @@ import mediasoup from 'mediasoup';
 import os from 'os';
 
 let workers = [];
-let nextMediasoupWorkerIdx = 0;
+let nextWorkerIdx = 0;
 
 export const config = {
   worker: {
     rtcMinPort: 10000,
     rtcMaxPort: 10100,
     logLevel: 'warn',
-    logTags: ['info', 'ice', 'dtls', 'rtp', 'srtp', 'rtcp'],
+    logTags: ['info', 'ice', 'dtls'],
   },
   router: {
     mediaCodecs: [
@@ -23,19 +23,6 @@ export const config = {
         kind: 'video',
         mimeType: 'video/VP8',
         clockRate: 90000,
-        parameters: {
-          'x-google-start-bitrate': 1000,
-        },
-      },
-      {
-        kind: 'video',
-        mimeType: 'video/H264',
-        clockRate: 90000,
-        parameters: {
-          'packetization-mode': 1,
-          'profile-level-id': '4d0032',
-          'level-asymmetry-allowed': 1,
-        },
       },
     ],
   },
@@ -43,54 +30,48 @@ export const config = {
     listenIps: [
       {
         ip: '0.0.0.0',
-        // In production, you might want to dynamically get the public IP or use a known public IP
-        announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || null, 
+        announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || '127.0.0.1',
       },
     ],
     enableUdp: true,
     enableTcp: true,
     preferUdp: true,
-    maxIncomingBitrate: 1500000,
-    initialAvailableOutgoingBitrate: 1000000,
   },
 };
 
 export async function createWorkers() {
-  const numWorkers = Object.keys(os.cpus()).length;
-  console.log(`[mediasoup] Starting ${numWorkers} workers`);
+  const num = Math.min(os.cpus().length, 2);
 
-  for (let i = 0; i < numWorkers; i++) {
+  for (let i = 0; i < num; i++) {
     const worker = await mediasoup.createWorker(config.worker);
 
     worker.on('died', () => {
-      console.error(`[mediasoup] worker died [pid:${worker.pid}]`);
-      setTimeout(() => process.exit(1), 2000);
+      console.error('Worker died');
+      process.exit(1);
     });
 
     workers.push(worker);
   }
+
+  console.log(`Workers started: ${workers.length}`);
 }
 
-export function getWorker() {
-  const worker = workers[nextMediasoupWorkerIdx];
-  nextMediasoupWorkerIdx = (nextMediasoupWorkerIdx + 1) % workers.length;
+function getWorker() {
+  const worker = workers[nextWorkerIdx];
+  nextWorkerIdx = (nextWorkerIdx + 1) % workers.length;
   return worker;
 }
 
 export async function createRouter() {
   const worker = getWorker();
-  return await worker.createRouter({ mediaCodecs: config.router.mediaCodecs });
+  return worker.createRouter({ mediaCodecs: config.router.mediaCodecs });
 }
 
 export async function createWebRtcTransport(router) {
   const transport = await router.createWebRtcTransport(config.webRtcTransport);
 
-  transport.on('dtlsstatechange', dtlsState => {
-    if (dtlsState === 'closed') transport.close();
-  });
-
-  transport.on('routerclose', () => {
-    transport.close();
+  transport.on('dtlsstatechange', (state) => {
+    if (state === 'closed') transport.close();
   });
 
   return transport;
