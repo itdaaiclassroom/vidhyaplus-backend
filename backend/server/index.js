@@ -21,6 +21,7 @@ import principalRoutes from "./routes/principal.routes.js";
 import schoolRoutes from "./routes/school.routes.js";
 import adminManagementRoutes from "./routes/admin.routes.js";
 import subjectRoutes from "./routes/subject.routes.js";
+import gatingRoutes from "./routes/gating.routes.js";
 
 import http from "http";
 import { createWorkers } from "./mediasoup.js";
@@ -61,6 +62,7 @@ app.use("/api/principal", principalRoutes);
 app.use("/api/schools", schoolRoutes);
 app.use("/api/admin", adminManagementRoutes);
 app.use("/api/subjects", subjectRoutes);
+app.use("/api/chapter-gating", gatingRoutes);
 
 // AI Proxy Routes
 app.post("/api/ai/ask", async (req, res) => {
@@ -3183,9 +3185,23 @@ app.post("/api/live-session/start", async (req, res) => {
     const startTime = new Date();
     // Use LOCAL date (not UTC) so frontend attendance submission matches exactly.
     const sessionDate = `${startTime.getFullYear()}-${String(startTime.getMonth() + 1).padStart(2, "0")}-${String(startTime.getDate()).padStart(2, "0")}`;
+
+    // Fix: Persistence for Attendance and Quiz status if re-entering the class on the same day.
+    const [existingAttendance] = await db.query(
+      "SELECT 1 FROM attendance WHERE class_id = ? AND attendance_date = ? LIMIT 1",
+      [Number(classId), sessionDate]
+    );
+    const attendanceMarked = (existingAttendance && existingAttendance.length > 0) ? 1 : 0;
+
+    const [existingQuiz] = await db.query(
+      "SELECT 1 FROM live_quiz_sessions WHERE class_id = ? AND topic_id = ? AND status = 'ended' AND DATE(created_at) = ? LIMIT 1",
+      [Number(classId), Number(topicId), sessionDate]
+    );
+    const quizSubmitted = (existingQuiz && existingQuiz.length > 0) ? 1 : 0;
+
     const [result] = await db.query(
       `INSERT INTO live_sessions (teacher_id, class_id, subject_id, chapter_id, topic_id, topic_name, start_time, session_date, status, attendance_marked, quiz_submitted)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
       [
         Number(teacherId),
         Number(classId),
@@ -3195,6 +3211,8 @@ app.post("/api/live-session/start", async (req, res) => {
         String(topicName),
         startTime,
         sessionDate,
+        attendanceMarked,
+        quizSubmitted
       ]
     );
     const id = result.insertId;
@@ -3213,8 +3231,8 @@ app.post("/api/live-session/start", async (req, res) => {
       topicName: String(topicName),
       startTime: startTime.toISOString(),
       status: "active",
-      attendanceMarked: false,
-      quizSubmitted: false,
+      attendanceMarked: attendanceMarked === 1,
+      quizSubmitted: quizSubmitted === 1,
     });
   } catch (err) {
     console.error("POST /api/live-session/start error:", err);
@@ -3248,6 +3266,59 @@ app.put("/api/live-session/:id/end", async (req, res) => {
         await upsertStudentMarksFromLiveQuizSession(db, row.id);
       }
     } catch (_) { }
+
+    // Auto-compute class chapter performance for gating system
+    try {
+      const [sessionInfo] = await db.query(
+        "SELECT chapter_id, class_id, subject_id FROM live_sessions WHERE id = ?",
+        [id]
+      );
+      if (sessionInfo[0] && sessionInfo[0].chapter_id) {
+        const si = sessionInfo[0];
+        const studentThresholdPct = 60; // default, gating_config is checked by controller
+        try {
+          const [gcRows] = await db.query(
+            "SELECT config_value FROM gating_config WHERE config_key = 'student_threshold_percentage' LIMIT 1"
+          );
+          if (gcRows[0]) {
+            const threshold = parseFloat(gcRows[0].config_value) || 60;
+            const [perfRows] = await db.query(
+              `SELECT
+                 COUNT(DISTINCT sm.student_id) AS total_students,
+                 ROUND(AVG((sm.score / NULLIF(sm.total, 0)) * 100), 2) AS avg_score,
+                 SUM(CASE WHEN (sm.score / NULLIF(sm.total, 0)) * 100 >= ? THEN 1 ELSE 0 END) AS students_passed
+               FROM student_marks sm
+               JOIN students st ON st.id = sm.student_id
+               WHERE sm.chapter_id = ? AND st.section_id = ? AND sm.total > 0`,
+              [threshold, si.chapter_id, si.class_id]
+            );
+            const data = perfRows[0] || {};
+            const totalStudents = data.total_students || 0;
+            const avgScore = parseFloat(data.avg_score) || 0;
+            const studentsPassed = parseInt(data.students_passed) || 0;
+            const passPercentage = totalStudents > 0 ? Math.round((studentsPassed / totalStudents) * 100 * 100) / 100 : 0;
+            const thresholdMet = avgScore >= threshold;
+
+            await db.query(
+              `INSERT INTO class_chapter_performance
+                 (class_id, chapter_id, subject_id, avg_score, pass_percentage, total_students, students_passed, threshold_met)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE
+                 avg_score = VALUES(avg_score), pass_percentage = VALUES(pass_percentage),
+                 total_students = VALUES(total_students), students_passed = VALUES(students_passed),
+                 threshold_met = VALUES(threshold_met), computed_at = CURRENT_TIMESTAMP`,
+              [si.class_id, si.chapter_id, si.subject_id, avgScore, passPercentage, totalStudents, studentsPassed, thresholdMet ? 1 : 0]
+            );
+            console.log(`[gating] Auto-computed performance for chapter ${si.chapter_id}, class ${si.class_id}: avg=${avgScore}%, met=${thresholdMet}`);
+          }
+        } catch (gcErr) {
+          console.warn("[gating] Auto-compute skipped (gating tables may not exist):", gcErr.message);
+        }
+      }
+    } catch (perfErr) {
+      console.warn("[gating] Auto-compute performance error:", perfErr.message);
+    }
+
     res.json({ id: String(id), status: "ended" });
   } catch (err) {
     console.error("PUT /api/live-session/:id/end error:", err);
