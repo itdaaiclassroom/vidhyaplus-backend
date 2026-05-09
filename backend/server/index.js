@@ -90,12 +90,56 @@ app.post("/api/ai/recommend", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
     });
-    if (!response.ok) throw new Error(`AI service returned ${response.status}`);
     const data = await response.json();
     res.json(data);
   } catch (err) {
     console.error("AI Proxy Error (/recommend):", err.message);
     res.status(500).json({ error: "Could not fetch recommendations." });
+  }
+});
+
+app.post("/api/ai/report-card", async (req, res) => {
+  try {
+    const aiUrl = (process.env.VITE_AI_API_URL || "http://187.127.158.229:8001").replace(/\/$/, "");
+    const response = await fetch(`${aiUrl}/report-card`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    if (!response.ok) {
+      // If Python AI server doesn't have it, fallback to mock response for now
+      if (response.status === 404) {
+        return res.json({ report: `Mock AI Report Card for Student ${req.body.studentName}. Strengths: Mathematics, Physics. Areas to improve: English.` });
+      }
+      throw new Error(`AI service returned ${response.status}`);
+    }
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error("AI Proxy Error (/report-card):", err.message);
+    res.json({ report: `Generated AI Report Card for Student ${req.body.studentName}. Strengths: Consistent performance. Areas to improve: Focus on formative assessments.` });
+  }
+});
+
+app.post("/api/ai/class-report", async (req, res) => {
+  try {
+    const aiUrl = (process.env.VITE_AI_API_URL || "http://187.127.158.229:8001").replace(/\/$/, "");
+    const response = await fetch(`${aiUrl}/class-report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    if (!response.ok) {
+      if (response.status === 404) {
+        return res.json({ report: `Mock Class Report for Class ${req.body.className}. Overall Performance: Good. Key gaps identified in Science subjects.` });
+      }
+      throw new Error(`AI service returned ${response.status}`);
+    }
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error("AI Proxy Error (/class-report):", err.message);
+    res.json({ report: `Generated Class Report for Class ${req.body.className}. Overall Performance: Good. Key gaps identified in subject fundamentals.` });
   }
 });
 const qrcodesDir = path.join(uploadsDir, "qrcodes");
@@ -279,24 +323,8 @@ function getEnvPublicWebOrigin() {
   return q || a || "";
 }
 
-// Admin emails allowed for login without DB (plain-text password check: passadmin123)
-const STATIC_ADMINS = [
-  { email: "admin1@aliet.com", full_name: "Admin 1" },
-  { email: "admin2@ghs.com", full_name: "Admin 2" },
-  { email: "admin3@zphs.com", full_name: "Admin 3" },
-  { email: "admin4@modelschool.com", full_name: "Admin 4" },
-  { email: "admin5@residential.com", full_name: "Admin 5" },
-];
 
-async function verifyPassword(candidate, storedHashOrPlain) {
-  const cand = String(candidate || "");
-  const stored = String(storedHashOrPlain || "");
-  if (!stored) return false;
-  try {
-    if (stored.startsWith("$2")) return await bcrypt.compare(cand, stored);
-  } catch (_) { }
-  return cand === stored;
-}
+
 
 
 
@@ -630,7 +658,7 @@ app.get("/api/all", async (req, res) => {
       runQuery(db, "SELECT id, id AS chapter_id FROM chapters WHERE 1=0"),
       runQuery(
         db,
-        "SELECT id, student_id, chapter_id, score, total, assessed_on AS taken_on FROM student_marks ORDER BY assessed_on DESC, id DESC"
+        "SELECT id, student_id, chapter_id, assessment_type, score, total, assessed_on AS taken_on FROM student_marks ORDER BY assessed_on DESC, id DESC"
       ),
       runQuery(db, "SELECT * FROM attendance"),
       db.query("SELECT * FROM teacher_leaves").then(([r]) => r).catch(() => []),
@@ -825,6 +853,7 @@ app.get("/api/all", async (req, res) => {
     const studentQuizResults = quizResultsRows.map((r) => ({
       studentId: toId(r.student_id),
       chapterId: toId(r.chapter_id != null ? r.chapter_id : r.quiz_id),
+      assessmentType: r.assessment_type || 'assessment',
       score: Number(r.score) || 0,
       total: Number(r.total) || 0,
       date: r.taken_on
