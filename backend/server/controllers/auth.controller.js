@@ -162,7 +162,7 @@ export async function studentLogin(req, res) {
 }
 
 /**
- * Admin Login API
+ * Admin Login API (fully dynamic — DB-driven only)
  * POST /api/auth/login
  */
 export async function adminLogin(req, res) {
@@ -172,39 +172,6 @@ export async function adminLogin(req, res) {
     return res.status(400).json({ error: "Email and password are required" });
   }
 
-  // Static admins: strict password check
-  const STATIC_ADMINS = [
-    { email: "admin1@aliet.com", full_name: "Admin 1" },
-    { email: "admin2@ghs.com", full_name: "Admin 2" },
-    { email: "admin3@zphs.com", full_name: "Admin 3" },
-    { email: "admin4@modelschool.com", full_name: "Admin 4" },
-    { email: "admin5@residential.com", full_name: "Admin 5" },
-  ];
-
-  const staticAdmin = STATIC_ADMINS.find((a) => a.email.toLowerCase() === emailTrim.toLowerCase());
-  if (staticAdmin) {
-    if (String(password).trim() !== "passadmin123") {
-      return res.status(401).json({ error: "Invalid admin credentials" });
-    }
-    
-    const token = jwt.sign(
-      { id: "admin-" + staticAdmin.email.replace(/@.*/, ""), email: staticAdmin.email, role: "admin" },
-      JWT_SECRET,
-      { expiresIn: "24h" }
-    );
-
-    return res.json({
-      token,
-      user: {
-        id: "admin-" + staticAdmin.email.replace(/@.*/, ""),
-        email: staticAdmin.email,
-        full_name: staticAdmin.full_name || staticAdmin.email,
-        role: "admin",
-      }
-    });
-  }
-
-  // DB-backed admins
   try {
     const db = getPool();
     const [rows] = await db.query(
@@ -212,29 +179,74 @@ export async function adminLogin(req, res) {
       [emailTrim]
     );
     const admin = Array.isArray(rows) && rows[0] ? rows[0] : null;
-    if (admin) {
-      const ok = await verifyPassword(password, admin.password);
-      if (!ok) return res.status(401).json({ error: "Invalid admin credentials" });
-      
-      const token = jwt.sign(
-        { id: admin.id, email: admin.email, role: admin.role || "admin" },
-        JWT_SECRET,
-        { expiresIn: "24h" }
-      );
+    if (!admin) return res.status(401).json({ error: "Admin not found" });
 
-      return res.json({
-        token,
-        user: {
-          id: String(admin.id),
-          email: admin.email,
-          full_name: admin.name || admin.email,
-          role: admin.role || "admin",
-        }
-      });
-    }
-    return res.status(401).json({ error: "Admin not found" });
+    const ok = await verifyPassword(password, admin.password);
+    if (!ok) return res.status(401).json({ error: "Invalid admin credentials" });
+
+    const token = jwt.sign(
+      { id: admin.id, email: admin.email, role: admin.role || "admin" },
+      JWT_SECRET,
+      { expiresIn: "24h" }
+    );
+
+    return res.json({
+      token,
+      user: {
+        id: String(admin.id),
+        email: admin.email,
+        full_name: admin.name || admin.email,
+        role: admin.role || "admin",
+      }
+    });
   } catch (err) {
     console.error("Admin login error:", err);
     return res.status(500).json({ error: "Admin login failed" });
+  }
+}
+
+/**
+ * Team Login API (department-level team members)
+ * POST /api/auth/login/team
+ */
+export async function teamLogin(req, res) {
+  const emailTrim = req.body?.email != null ? String(req.body.email).trim() : "";
+  const { password } = req.body || {};
+  if (!emailTrim || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
+  }
+
+  try {
+    const db = getPool();
+    const [rows] = await db.query(
+      "SELECT id, team_name, email, role, district, password FROM admin_teams WHERE email = ? AND is_active = 1 LIMIT 1",
+      [emailTrim]
+    );
+    const team = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    if (!team) return res.status(401).json({ error: "Team account not found" });
+
+    const ok = await verifyPassword(password, team.password);
+    if (!ok) return res.status(401).json({ error: "Invalid team credentials" });
+
+    const token = jwt.sign(
+      { id: team.id, email: team.email, role: team.role, district: team.district, type: "team" },
+      JWT_SECRET,
+      { expiresIn: "24h" }
+    );
+
+    return res.json({
+      token,
+      user: {
+        id: String(team.id),
+        email: team.email,
+        full_name: team.team_name,
+        role: team.role,
+        district: team.district || null,
+        type: "team"
+      }
+    });
+  } catch (err) {
+    console.error("Team login error:", err);
+    return res.status(500).json({ error: "Team login failed" });
   }
 }

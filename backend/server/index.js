@@ -279,24 +279,8 @@ function getEnvPublicWebOrigin() {
   return q || a || "";
 }
 
-// Admin emails allowed for login without DB (plain-text password check: passadmin123)
-const STATIC_ADMINS = [
-  { email: "admin1@aliet.com", full_name: "Admin 1" },
-  { email: "admin2@ghs.com", full_name: "Admin 2" },
-  { email: "admin3@zphs.com", full_name: "Admin 3" },
-  { email: "admin4@modelschool.com", full_name: "Admin 4" },
-  { email: "admin5@residential.com", full_name: "Admin 5" },
-];
 
-async function verifyPassword(candidate, storedHashOrPlain) {
-  const cand = String(candidate || "");
-  const stored = String(storedHashOrPlain || "");
-  if (!stored) return false;
-  try {
-    if (stored.startsWith("$2")) return await bcrypt.compare(cand, stored);
-  } catch (_) { }
-  return cand === stored;
-}
+
 
 
 
