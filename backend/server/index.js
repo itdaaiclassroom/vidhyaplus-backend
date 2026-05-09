@@ -2555,27 +2555,35 @@ app.post("/api/live-quiz/:id/scan", async (req, res) => {
       return res.status(400).json({ error: "Student is absent and not eligible for quiz today" });
     }
 
-    // 5. Duplicate Check
+    // 5. Insert or Update Answer
+    const correctOption = String(question.correct_option || "A").toUpperCase().charAt(0);
+    const isCorrect = selectedOption === correctOption ? 1 : 0;
+    
     const [dupRows] = await db.query(
       "SELECT id FROM live_quiz_answers WHERE live_quiz_session_id = ? AND question_id = ? AND student_id = ? LIMIT 1",
       [sessionId, Number(question.id), Number(student.id)]
     );
+    
+    let isNewAnswer = false;
     if (Array.isArray(dupRows) && dupRows[0]) {
-      return res.status(409).json({ error: "Duplicate scan for this student/question", duplicate: true });
+      await db.query(
+        "UPDATE live_quiz_answers SET selected_option = ?, is_correct = ? WHERE id = ?",
+        [selectedOption, isCorrect, dupRows[0].id]
+      );
+    } else {
+      await db.query(
+        "INSERT INTO live_quiz_answers (live_quiz_session_id, student_id, question_id, selected_option, is_correct) VALUES (?, ?, ?, ?, ?)",
+        [sessionId, Number(student.id), Number(question.id), selectedOption, isCorrect]
+      );
+      isNewAnswer = true;
     }
 
-    // 6. Insert Answer
-    const correctOption = String(question.correct_option || "A").toUpperCase().charAt(0);
-    const isCorrect = selectedOption === correctOption ? 1 : 0;
-    await db.query(
-      "INSERT INTO live_quiz_answers (live_quiz_session_id, student_id, question_id, selected_option, is_correct) VALUES (?, ?, ?, ?, ?)",
-      [sessionId, Number(student.id), Number(question.id), selectedOption, isCorrect]
-    );
-
     // 7. Update Runtime State (Optimized: just increment if possible)
-    const qKey = String(qNo);
-    if (!runtimeState.progressByQuestion[qKey]) runtimeState.progressByQuestion[qKey] = 0;
-    runtimeState.progressByQuestion[qKey] += 1;
+    if (isNewAnswer) {
+      const qKey = String(qNo);
+      if (!runtimeState.progressByQuestion[qKey]) runtimeState.progressByQuestion[qKey] = 0;
+      runtimeState.progressByQuestion[qKey] += 1;
+    }
 
     const studentName = [student.first_name, student.last_name].filter(Boolean).join(" ").trim() || `Student ${student.id}`;
     res.json({
