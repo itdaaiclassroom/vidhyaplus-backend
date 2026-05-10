@@ -133,6 +133,8 @@ export async function getSubjectMaterials(req, res) {
 
 // Upload a new material for a subject
 import * as assetStorage from "./../storage.js";
+import XLSX from "xlsx";
+import { auditLog, actorFromReq } from "../utils/auditLogger.js";
 
 export async function uploadSubjectMaterial(req, res) {
   const db = getPool();
@@ -207,5 +209,454 @@ export async function deleteSubjectMaterial(req, res) {
   } catch (err) {
     console.error("DELETE /api/subjects/materials/:id error:", err);
     res.status(500).json({ error: String(err.message) });
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SUBJECT QUESTION BANK
+   A new table (subject_quiz_bank) holds questions tagged with:
+     subject_id (from URL param), chapter (free text), grade (6-10)
+   No topic_id required — teacher-friendly design.
+═══════════════════════════════════════════════════════════════ */
+
+/** Allowed file MIME types and extensions for Excel/CSV uploads */
+const ALLOWED_EXCEL_MIMES = new Set([
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
+  "application/vnd.ms-excel",                                           // .xls
+  "text/csv",                                                            // .csv
+  "application/csv",
+  "text/plain",                                                          // Some clients send CSV as text/plain
+]);
+
+/**
+ * Parse a base64 or raw-base64 encoded spreadsheet/csv buffer
+ * using SheetJS (xlsx). Returns an array of row objects.
+ */
+function parseSpreadsheetBuffer(buffer) {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+  // header: 1 — use first row as keys
+  return XLSX.utils.sheet_to_json(firstSheet, { defval: "" });
+}
+
+/**
+ * Normalize a correct_option value to uppercase single letter A/B/C/D.
+ * Returns null if invalid.
+ */
+function normalizeCorrectOption(raw) {
+  const val = String(raw ?? "").trim().toUpperCase();
+  return ["A", "B", "C", "D"].includes(val) ? val : null;
+}
+
+/**
+ * Normalize a grade value to an integer 6-10, or null if invalid.
+ */
+function normalizeGrade(raw) {
+  if (raw === null || raw === undefined || String(raw).trim() === "") return null;
+  const num = parseInt(String(raw).trim(), 10);
+  return num >= 6 && num <= 10 ? num : null;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   1. BULK UPLOAD
+   POST /api/subjects/:id/question-bank/bulk
+   Body: { file: "<base64 string of .xlsx / .xls / .csv>" }
+──────────────────────────────────────────────────────────────── */
+export async function bulkUploadSubjectQuestions(req, res) {
+  const db = getPool();
+  const subjectId = Number(req.params.id);
+  if (!subjectId) return res.status(400).json({ error: "subject id required" });
+
+  const { file } = req.body;
+  if (!file) return res.status(400).json({ error: "file (base64) is required" });
+
+  try {
+    // Validate subject exists
+    const [subjRows] = await db.query("SELECT id, subject_name FROM subjects WHERE id = ? LIMIT 1", [subjectId]);
+    if (!subjRows || subjRows.length === 0) {
+      return res.status(404).json({ error: "Subject not found" });
+    }
+    const subjectName = subjRows[0].subject_name;
+
+    // Decode base64 → Buffer (strip data URI prefix if present)
+    const base64Data = file.replace(/^data:[^;]+;base64,/, "");
+    const buffer = Buffer.from(base64Data, "base64");
+    if (buffer.length === 0) return res.status(400).json({ error: "file content is empty" });
+
+    // Parse spreadsheet
+    let rows;
+    try {
+      rows = parseSpreadsheetBuffer(buffer);
+    } catch (parseErr) {
+      return res.status(422).json({ error: "Could not parse file. Ensure it is a valid .xlsx, .xls, or .csv file.", detail: parseErr.message });
+    }
+
+    if (!rows || rows.length === 0) {
+      return res.status(422).json({ error: "The uploaded file has no data rows." });
+    }
+
+    const actor = actorFromReq(req);
+    const uploadedBy   = actor.actor_name;
+    const uploadedById = actor.actor_id;
+
+    const validRows  = [];
+    const errorRows  = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row     = rows[i];
+      const rowNum  = i + 2; // +2 because row 1 is the header in Excel
+
+      // Map column headers (case-insensitive, trim whitespace)
+      const keys = Object.fromEntries(
+        Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), String(v ?? "").trim()])
+      );
+
+      const questionText  = keys["question"] || keys["question text"] || "";
+      const optionA       = keys["option a"] || keys["a"] || "";
+      const optionB       = keys["option b"] || keys["b"] || "";
+      const optionC       = keys["option c"] || keys["c"] || "";
+      const optionD       = keys["option d"] || keys["d"] || "";
+      const rawCorrect    = keys["correct answer"] || keys["correct"] || keys["answer"] || "";
+      const explanation   = keys["explanation"] || keys["explain"] || null;
+      const chapter       = keys["chapter"] || null;
+      const rawGrade      = keys["grade"] || keys["class"] || null;
+
+      // --- Validate required fields ---
+      if (!questionText) {
+        errorRows.push({ row: rowNum, reason: "Question text is missing" });
+        continue;
+      }
+      if (!optionA || !optionB || !optionC || !optionD) {
+        errorRows.push({ row: rowNum, reason: "One or more options (A/B/C/D) are missing" });
+        continue;
+      }
+      const correctOption = normalizeCorrectOption(rawCorrect);
+      if (!correctOption) {
+        errorRows.push({ row: rowNum, reason: `Correct Answer "${rawCorrect}" is invalid. Must be A, B, C, or D.` });
+        continue;
+      }
+
+      const grade = normalizeGrade(rawGrade);
+
+      validRows.push([
+        subjectId,
+        chapter && chapter.length > 0 ? chapter : null,
+        grade,
+        questionText,
+        optionA,
+        optionB,
+        optionC,
+        optionD,
+        correctOption,
+        explanation && explanation.length > 0 ? explanation : null,
+        uploadedBy,
+        uploadedById,
+      ]);
+    }
+
+    // Bulk insert all valid rows in one query
+    let insertedCount = 0;
+    if (validRows.length > 0) {
+      const [insertResult] = await db.query(
+        `INSERT INTO subject_quiz_bank
+          (subject_id, chapter, grade, question_text,
+           option_a, option_b, option_c, option_d,
+           correct_option, explanation, uploaded_by, uploaded_by_id)
+         VALUES ?`,
+        [validRows]
+      );
+      insertedCount = insertResult.affectedRows;
+    }
+
+    // Audit log
+    await auditLog(db, {
+      ...actor,
+      action:    "CREATE",
+      entity:    "question_bank_bulk",
+      entity_id: String(subjectId),
+      meta: {
+        subject_id:   subjectId,
+        subject_name: subjectName,
+        total_rows:   rows.length,
+        uploaded:     insertedCount,
+        failed:       errorRows.length,
+      },
+      req,
+    });
+
+    return res.status(201).json({
+      ok:       true,
+      subject:  subjectName,
+      uploaded: insertedCount,
+      failed:   errorRows.length,
+      errors:   errorRows,
+    });
+  } catch (err) {
+    console.error("POST /api/subjects/:id/question-bank/bulk error:", err);
+    return res.status(500).json({ error: String(err.message) });
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   2. SINGLE QUESTION CREATE
+   POST /api/subjects/:id/question-bank
+──────────────────────────────────────────────────────────────── */
+export async function createSubjectQuestion(req, res) {
+  const db = getPool();
+  const subjectId = Number(req.params.id);
+  if (!subjectId) return res.status(400).json({ error: "subject id required" });
+
+  const {
+    question_text, option_a, option_b, option_c, option_d,
+    correct_option, explanation, chapter, grade,
+  } = req.body;
+
+  if (!question_text || !option_a || !option_b || !option_c || !option_d) {
+    return res.status(400).json({ error: "question_text and all four options are required" });
+  }
+  const normalizedCorrect = normalizeCorrectOption(correct_option);
+  if (!normalizedCorrect) {
+    return res.status(400).json({ error: "correct_option must be A, B, C, or D" });
+  }
+
+  try {
+    const [subjRows] = await db.query("SELECT id FROM subjects WHERE id = ? LIMIT 1", [subjectId]);
+    if (!subjRows || subjRows.length === 0) return res.status(404).json({ error: "Subject not found" });
+
+    const actor = actorFromReq(req);
+    const [result] = await db.query(
+      `INSERT INTO subject_quiz_bank
+        (subject_id, chapter, grade, question_text,
+         option_a, option_b, option_c, option_d,
+         correct_option, explanation, uploaded_by, uploaded_by_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        subjectId,
+        chapter || null,
+        normalizeGrade(grade),
+        question_text,
+        option_a, option_b, option_c, option_d,
+        normalizedCorrect,
+        explanation || null,
+        actor.actor_name,
+        actor.actor_id,
+      ]
+    );
+
+    await auditLog(db, {
+      ...actor,
+      action: "CREATE", entity: "question_bank", entity_id: String(result.insertId),
+      meta: { subject_id: subjectId, chapter, grade, question_text },
+      req,
+    });
+
+    return res.status(201).json({ ok: true, id: String(result.insertId), subject_id: subjectId });
+  } catch (err) {
+    console.error("POST /api/subjects/:id/question-bank error:", err);
+    return res.status(500).json({ error: String(err.message) });
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   3. GET — Per-subject filtered list
+   GET /api/subjects/:id/question-bank
+   ?chapter=Optics &grade=10 &page=1 &limit=50
+──────────────────────────────────────────────────────────────── */
+export async function getSubjectQuestionBank(req, res) {
+  const db = getPool();
+  const subjectId = Number(req.params.id);
+  if (!subjectId) return res.status(400).json({ error: "subject id required" });
+
+  const page  = Math.max(1, parseInt(req.query.page  || "1", 10));
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || "50", 10)));
+  const offset = (page - 1) * limit;
+
+  const conditions = ["sqb.subject_id = ?"];
+  const params     = [subjectId];
+
+  if (req.query.grade) {
+    const g = normalizeGrade(req.query.grade);
+    if (g) { conditions.push("sqb.grade = ?"); params.push(g); }
+  }
+  if (req.query.chapter) {
+    conditions.push("sqb.chapter LIKE ?");
+    params.push(`%${req.query.chapter}%`);
+  }
+
+  const where = `WHERE ${conditions.join(" AND ")}`;
+
+  try {
+    const [[{ total }]] = await db.query(
+      `SELECT COUNT(*) AS total FROM subject_quiz_bank sqb ${where}`, params
+    );
+    const [rows] = await db.query(
+      `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade,
+              sqb.question_text, sqb.option_a, sqb.option_b, sqb.option_c, sqb.option_d,
+              sqb.correct_option, sqb.explanation, sqb.uploaded_by, sqb.created_at
+       FROM subject_quiz_bank sqb
+       JOIN subjects s ON s.id = sqb.subject_id
+       ${where}
+       ORDER BY sqb.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    return res.json({
+      total: Number(total),
+      page, limit,
+      total_pages: Math.ceil(Number(total) / limit),
+      filters: {
+        subject_id: subjectId,
+        grade: req.query.grade || null,
+        chapter: req.query.chapter || null,
+      },
+      data: rows,
+    });
+  } catch (err) {
+    console.error("GET /api/subjects/:id/question-bank error:", err);
+    return res.status(500).json({ error: String(err.message) });
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   4. GET — System-wide filtered list (admin view)
+   GET /api/subjects/question-bank
+   ?subject_id=3 &chapter=Optics &grade=10 &page=1 &limit=50
+──────────────────────────────────────────────────────────────── */
+export async function getQuestionBank(req, res) {
+  const db = getPool();
+
+  const page  = Math.max(1, parseInt(req.query.page  || "1", 10));
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || "50", 10)));
+  const offset = (page - 1) * limit;
+
+  const conditions = [];
+  const params     = [];
+
+  if (req.query.subject_id) {
+    conditions.push("sqb.subject_id = ?");
+    params.push(Number(req.query.subject_id));
+  }
+  if (req.query.grade) {
+    const g = normalizeGrade(req.query.grade);
+    if (g) { conditions.push("sqb.grade = ?"); params.push(g); }
+  }
+  if (req.query.chapter) {
+    conditions.push("sqb.chapter LIKE ?");
+    params.push(`%${req.query.chapter}%`);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  try {
+    const [[{ total }]] = await db.query(
+      `SELECT COUNT(*) AS total FROM subject_quiz_bank sqb ${where}`, params
+    );
+    const [rows] = await db.query(
+      `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade,
+              sqb.question_text, sqb.option_a, sqb.option_b, sqb.option_c, sqb.option_d,
+              sqb.correct_option, sqb.explanation, sqb.uploaded_by, sqb.created_at
+       FROM subject_quiz_bank sqb
+       JOIN subjects s ON s.id = sqb.subject_id
+       ${where}
+       ORDER BY sqb.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    return res.json({
+      total: Number(total),
+      page, limit,
+      total_pages: Math.ceil(Number(total) / limit),
+      filters: {
+        subject_id: req.query.subject_id || null,
+        grade: req.query.grade || null,
+        chapter: req.query.chapter || null,
+      },
+      data: rows,
+    });
+  } catch (err) {
+    console.error("GET /api/subjects/question-bank error:", err);
+    return res.status(500).json({ error: String(err.message) });
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   5. UPDATE — Edit a single question
+   PUT /api/subjects/question-bank/:qid
+──────────────────────────────────────────────────────────────── */
+export async function updateSubjectQuestion(req, res) {
+  const db = getPool();
+  const qid = Number(req.params.qid);
+  if (!qid) return res.status(400).json({ error: "question id required" });
+
+  const {
+    question_text, option_a, option_b, option_c, option_d,
+    correct_option, explanation, chapter, grade,
+  } = req.body;
+
+  try {
+    const updates = [];
+    const values  = [];
+
+    if (question_text !== undefined) { updates.push("question_text = ?"); values.push(String(question_text).trim()); }
+    if (option_a !== undefined)      { updates.push("option_a = ?");      values.push(String(option_a).trim()); }
+    if (option_b !== undefined)      { updates.push("option_b = ?");      values.push(String(option_b).trim()); }
+    if (option_c !== undefined)      { updates.push("option_c = ?");      values.push(String(option_c).trim()); }
+    if (option_d !== undefined)      { updates.push("option_d = ?");      values.push(String(option_d).trim()); }
+    if (explanation !== undefined)   { updates.push("explanation = ?");   values.push(explanation || null); }
+    if (chapter !== undefined)       { updates.push("chapter = ?");       values.push(chapter || null); }
+    if (grade !== undefined)         { updates.push("grade = ?");         values.push(normalizeGrade(grade)); }
+    if (correct_option !== undefined) {
+      const normalized = normalizeCorrectOption(correct_option);
+      if (!normalized) return res.status(400).json({ error: "correct_option must be A, B, C, or D" });
+      updates.push("correct_option = ?");
+      values.push(normalized);
+    }
+
+    if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
+
+    values.push(qid);
+    const [result] = await db.query(
+      `UPDATE subject_quiz_bank SET ${updates.join(", ")} WHERE id = ?`, values
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Question not found" });
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "UPDATE", entity: "question_bank", entity_id: String(qid),
+      meta: { updated_fields: updates.map(u => u.split(" = ")[0]) },
+      req,
+    });
+
+    return res.json({ ok: true, id: String(qid), updated: true });
+  } catch (err) {
+    console.error("PUT /api/subjects/question-bank/:qid error:", err);
+    return res.status(500).json({ error: String(err.message) });
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────
+   6. DELETE — Remove a single question
+   DELETE /api/subjects/question-bank/:qid
+──────────────────────────────────────────────────────────────── */
+export async function deleteSubjectQuestion(req, res) {
+  const db = getPool();
+  const qid = Number(req.params.qid);
+  if (!qid) return res.status(400).json({ error: "question id required" });
+
+  try {
+    const [result] = await db.query("DELETE FROM subject_quiz_bank WHERE id = ?", [qid]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Question not found" });
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "DELETE", entity: "question_bank", entity_id: String(qid), req,
+    });
+
+    return res.json({ ok: true, deleted: true });
+  } catch (err) {
+    console.error("DELETE /api/subjects/question-bank/:qid error:", err);
+    return res.status(500).json({ error: String(err.message) });
   }
 }
