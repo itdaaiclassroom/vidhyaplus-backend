@@ -641,7 +641,7 @@ app.get("/api/all", async (req, res) => {
       runQuery(db, "SELECT * FROM students"),
       runQuery(
         db,
-        "SELECT id, subject_name AS name, '📚' AS icon, '10' AS grades FROM subjects ORDER BY FIELD(subject_name, 'Telugu', 'Hindi', 'English', 'Mathematics', 'Physics', 'Biology', 'Social Studies'), subject_name"
+        "SELECT id, subject_name AS name, COALESCE(icon, '📚') AS icon, COALESCE(grades, '1,2,3,4,5,6,7,8,9,10') AS grades FROM subjects ORDER BY FIELD(subject_name, 'Telugu', 'Hindi', 'English', 'Mathematics', 'Physics', 'Biology', 'Social Studies'), subject_name"
       ),
       runQuery(
         db,
@@ -683,7 +683,7 @@ app.get("/api/all", async (req, res) => {
       runQuery(db, "SELECT class_id, week_day, period_no, subject_name, subject_id, teacher_id, start_time, end_time FROM class_timetables ORDER BY class_id, week_day, period_no").catch(() => []),
       runQuery(db, "SELECT aa.id, aa.activity_id, aa.teacher_id, aa.class_id, aa.activity_date, aa.status, a.title, a.description FROM activity_assignments aa JOIN activities a ON a.id = aa.activity_id ORDER BY aa.activity_date DESC, aa.id DESC").catch(() => []),
       runQuery(db, "SELECT activity_assignment_id, student_id, status FROM activity_participation").catch(() => []),
-      runQuery(db, "SELECT id, subject_id, title, file_path AS url FROM subject_materials").catch(() => []),
+      runQuery(db, "SELECT id, subject_id, grade_id, title, file_path AS url FROM subject_materials").catch(() => []),
     ]);
 
     const teacherIdsBySchool = {};
@@ -821,7 +821,7 @@ app.get("/api/all", async (req, res) => {
         id: toId(s.id),
         name: s.name,
         icon: s.icon || "📚",
-        grades: grades.length ? grades : [6, 7, 8, 9, 10],
+        grades: grades.length ? grades : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
       };
     });
 

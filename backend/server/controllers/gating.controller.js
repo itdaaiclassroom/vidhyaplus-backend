@@ -219,12 +219,13 @@ export async function getAssessmentQuestions(req, res) {
     if (chapterRows.length === 0) return res.status(404).json({ error: "Chapter not found" });
     const chapter = chapterRows[0];
 
-    // Get topic IDs for this chapter
+    // Get topic names for this chapter for better placeholder questions
     const [topicRows] = await db.query(
-      "SELECT id FROM topics WHERE chapter_id = ?",
+      "SELECT id, name FROM topics WHERE chapter_id = ?",
       [chapterId]
     );
-    const topicIds = topicRows.map((t) => t.id);
+    const topics = topicRows.map((t) => ({ id: t.id, name: t.name }));
+    const topicIds = topics.map(t => t.id);
 
     let questions = [];
     let source = "quiz_bank";
@@ -252,12 +253,9 @@ export async function getAssessmentQuestions(req, res) {
     }
 
     if (questions.length === 0) {
-      // Fallback: generate basic questions from chapter info
+      // Fallback: generate questions from topic names
       source = "ai_generated";
-      // Generate placeholder questions based on chapter name
-      // In production, this would call the AI service
-      const placeholderQuestions = generatePlaceholderQuestions(chapter.chapter_name);
-      questions = placeholderQuestions;
+      questions = generatePlaceholderQuestions(chapter.chapter_name, topics.map(t => t.name));
     }
 
     return res.json({
@@ -276,21 +274,37 @@ export async function getAssessmentQuestions(req, res) {
 }
 
 /**
- * Generate placeholder assessment questions when quiz bank is empty.
- * In production, replace with actual AI-based generation.
+ * Generate smarter placeholder assessment questions using topic names.
  */
-function generatePlaceholderQuestions(chapterName) {
+function generatePlaceholderQuestions(chapterName, topicNames = []) {
   const questions = [];
-  for (let i = 1; i <= 10; i++) {
+  const count = 10;
+  
+  for (let i = 1; i <= count; i++) {
+    // Pick a topic to focus on for this question if available
+    const topic = topicNames.length > 0 ? topicNames[(i - 1) % topicNames.length] : null;
+    
+    const questionText = topic 
+      ? `Regarding the topic "${topic}" in ${chapterName}, which of these statements best describes its primary significance?`
+      : `Assessment Question ${i} for "${chapterName}" — Which fundamental principle is most essential to this chapter?`;
+
+    // Vary the options a bit based on the index
+    const options = [
+      { text: topic ? `It defines the core characteristics of ${topic}.` : "Fundamental theory and basic definitions.", key: "A" },
+      { text: topic ? `It explains the relationship between ${topic} and the wider ecosystem.` : "Practical application in real-world scenarios.", key: "B" },
+      { text: topic ? `It identifies the historical development of ${topic} concepts.` : "Advanced theoretical frameworks and analysis.", key: "C" },
+      { text: topic ? `It compares ${topic} with other related features in the chapter.` : "Historical context and evolutionary changes.", key: "D" }
+    ];
+
     questions.push({
       id: `gen-${i}`,
-      questionText: `Assessment Question ${i} for "${chapterName}" — What is the key concept covered in this section?`,
-      optionA: "Concept A - Core definition",
-      optionB: "Concept B - Application",
-      optionC: "Concept C - Advanced theory",
-      optionD: "Concept D - Historical context",
+      questionText,
+      optionA: options[0].text,
+      optionB: options[1].text,
+      optionC: options[2].text,
+      optionD: options[3].text,
       correctOption: ["A", "B", "C", "D"][Math.floor(Math.random() * 4)],
-      explanation: `This tests understanding of the fundamental concepts in ${chapterName}.`,
+      explanation: `This question evaluates your understanding of the essential details in ${topic || chapterName}.`,
     });
   }
   return questions;
@@ -385,14 +399,22 @@ export async function computeStudentPerformance(req, res) {
     const studentThresholdPct = parseFloat(await getConfigValue(db, "student_threshold_percentage", "60"));
 
     // Aggregate student marks for this chapter + class
+    // We group by student first to get their individual chapter average,
+    // then aggregate those averages to get class performance.
     const [rows] = await db.query(
-      `SELECT
-         COUNT(DISTINCT sm.student_id) AS total_students,
-         ROUND(AVG((sm.score / NULLIF(sm.total, 0)) * 100), 2) AS avg_score,
-         SUM(CASE WHEN (sm.score / NULLIF(sm.total, 0)) * 100 >= ? THEN 1 ELSE 0 END) AS students_passed
-       FROM student_marks sm
-       JOIN students st ON st.id = sm.student_id
-       WHERE sm.chapter_id = ? AND st.section_id = ? AND sm.total > 0`,
+      `SELECT 
+         COUNT(*) as total_students,
+         AVG(student_avg) as avg_score,
+         SUM(CASE WHEN student_avg >= ? THEN 1 ELSE 0 END) as students_passed
+       FROM (
+         SELECT 
+           sm.student_id,
+           AVG((sm.score / NULLIF(sm.total, 0)) * 100) as student_avg
+         FROM student_marks sm
+         JOIN students st ON st.id = sm.student_id
+         WHERE sm.chapter_id = ? AND st.section_id = ? AND sm.total > 0
+         GROUP BY sm.student_id
+       ) AS student_summaries`,
       [studentThresholdPct, chapterId, classId]
     );
 

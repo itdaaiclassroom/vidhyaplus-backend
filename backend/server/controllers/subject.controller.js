@@ -120,10 +120,18 @@ export async function getSubjectMaterials(req, res) {
   if (!id) return res.status(400).json({ error: "id required" });
 
   try {
-    const [rows] = await db.query(
-      "SELECT id, subject_id, title, file_path, uploaded_by, created_at FROM subject_materials WHERE subject_id = ? ORDER BY created_at DESC",
-      [id]
-    );
+    const gradeId = req.query.grade_id ? Number(req.query.grade_id) : null;
+    let sql = "SELECT id, subject_id, grade_id, title, file_path, uploaded_by, created_at FROM subject_materials WHERE subject_id = ?";
+    const params = [id];
+    
+    if (gradeId) {
+      sql += " AND grade_id = ?";
+      params.push(gradeId);
+    }
+    
+    sql += " ORDER BY created_at DESC";
+    
+    const [rows] = await db.query(sql, params);
     res.json(rows);
   } catch (err) {
     console.error("GET /api/subjects/:id/materials error:", err);
@@ -163,8 +171,8 @@ export async function uploadSubjectMaterial(req, res) {
 
     // Save record to DB
     const [result] = await db.query(
-      "INSERT INTO subject_materials (subject_id, title, file_path, uploaded_by) VALUES (?, ?, ?, ?)",
-      [id, title, publicUrl, "admin"]
+      "INSERT INTO subject_materials (subject_id, grade_id, title, file_path, uploaded_by) VALUES (?, ?, ?, ?, ?)",
+      [id, req.body.grade_id ? Number(req.body.grade_id) : null, title, publicUrl, "admin"]
     );
 
     res.status(201).json({
