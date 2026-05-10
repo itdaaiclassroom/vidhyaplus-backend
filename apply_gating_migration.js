@@ -87,7 +87,10 @@ async function applyGatingMigration() {
           ('teacher_pass_percentage', '70', 'Minimum percentage teacher must score to pass chapter assessment'),
           ('student_threshold_percentage', '60', 'Minimum class average percentage required to unlock next chapter'),
           ('gating_enabled', 'true', 'Master switch to enable/disable chapter gating system'),
-          ('allow_manual_override', 'true', 'Allow admins to manually override chapter locks');
+          ('allow_manual_override', 'true', 'Allow admins to manually override chapter locks'),
+          ('assessment_question_count', '10', 'Number of questions for each chapter assessment'),
+          ('assessment_total_marks', '100', 'Total marks for the teacher chapter assessment'),
+          ('assessment_passing_marks', '70', 'Passing marks required to clear the chapter assessment');
       `);
       console.log("✅ Inserted default gating_config values.");
     } catch (e) {
