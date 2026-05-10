@@ -20,10 +20,37 @@ import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// Subject CRUD (admin / principal only for write)
+// ── Question Bank (Static Routes) ─────────────────────────────────────────
+// ⚠️ Static paths MUST be registered BEFORE the dynamic /:id routes
+
+// System-wide list (admin/principal can query across all subjects)
+router.get(
+  "/question-bank",
+  authenticateJWT,
+  authorizeRole(["admin", "principal", "teacher", "material_management"]),
+  getQuestionBank
+);
+
+// Edit a single question
+router.put(
+  "/question-bank/:qid",
+  authenticateJWT,
+  authorizeRole(["admin", "principal", "material_management"]),
+  updateSubjectQuestion
+);
+
+// Delete a single question
+router.delete(
+  "/question-bank/:qid",
+  authenticateJWT,
+  authorizeRole(["admin", "principal", "material_management"]),
+  deleteSubjectQuestion
+);
+
+// ── Subject CRUD ────────────────────────────────────────────────────────
 router.get("/", authenticateJWT, getSubjects);
-router.get("/:id", authenticateJWT, getSubject);
 router.post("/", authenticateJWT, authorizeRole(["admin", "principal"]), createSubject);
+router.get("/:id", authenticateJWT, getSubject);
 router.put("/:id", authenticateJWT, authorizeRole(["admin", "principal"]), updateSubject);
 router.delete("/:id", authenticateJWT, authorizeRole(["admin"]), deleteSubject);
 
@@ -52,34 +79,7 @@ router.delete(
   deleteSubjectMaterial
 );
 
-// ── Question Bank ──────────────────────────────────────────────────────────
-// ⚠️  Static paths (/question-bank, /question-bank/:qid) MUST be registered
-//    BEFORE the dynamic /:id routes so Express does not treat the literal
-//    string "question-bank" as a subject ID.
-
-// System-wide list (admin/principal can query across all subjects)
-router.get(
-  "/question-bank",
-  authenticateJWT,
-  authorizeRole(["admin", "principal", "teacher", "material_management"]),
-  getQuestionBank
-);
-
-// Edit a single question
-router.put(
-  "/question-bank/:qid",
-  authenticateJWT,
-  authorizeRole(["admin", "principal", "material_management"]),
-  updateSubjectQuestion
-);
-
-// Delete a single question
-router.delete(
-  "/question-bank/:qid",
-  authenticateJWT,
-  authorizeRole(["admin", "principal", "material_management"]),
-  deleteSubjectQuestion
-);
+// ── Question Bank (Dynamic Routes) ───────────────────────────────────────
 
 // Per-subject question list (filterable by chapter & grade)
 router.get(
