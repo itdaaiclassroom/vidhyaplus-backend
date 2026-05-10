@@ -18,7 +18,9 @@ import {
   updateTeam,
   deleteTeam,
   // Analytics
-  getSubjectPerformance
+  getSubjectPerformance,
+  // Audit Logs
+  getAuditLogs
 } from "../controllers/admin_management.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -39,6 +41,9 @@ router.get("/announcements", getAnnouncements);
 
 // ── Activity Logs ──────────────────────────────
 router.get("/logs/teachers", getTeacherLogs);
+
+// ── Audit Logs (System-wide, admin-only) ────────
+router.get("/audit-logs", getAuditLogs);
 
 // ── Admin Management CRUD ─────────────────────
 router.get("/management", getAdmins);
