@@ -211,6 +211,24 @@ export async function getAssessmentQuestions(req, res) {
     const { chapterId } = req.params;
     if (!chapterId) return res.status(400).json({ error: "Missing chapterId" });
 
+    // Read per-chapter assessment settings first, then fall back to global config
+    let questionCount, totalMarks, passingMarks;
+    try {
+      const [chapterCfg] = await db.query(
+        "SELECT question_count, total_marks, passing_marks FROM chapter_assessment_config WHERE chapter_id = ? LIMIT 1",
+        [chapterId]
+      );
+      if (chapterCfg.length > 0) {
+        questionCount = chapterCfg[0].question_count;
+        totalMarks = chapterCfg[0].total_marks;
+        passingMarks = chapterCfg[0].passing_marks;
+      }
+    } catch (_) { /* table may not exist yet */ }
+    // Fall back to global config
+    if (!questionCount) questionCount = parseInt(await getConfigValue(db, "assessment_question_count", "10")) || 10;
+    if (!totalMarks) totalMarks = parseInt(await getConfigValue(db, "assessment_total_marks", "100")) || 100;
+    if (!passingMarks) passingMarks = parseInt(await getConfigValue(db, "assessment_passing_marks", "70")) || 70;
+
     // Get chapter info
     const [chapterRows] = await db.query(
       "SELECT id, subject_id, grade_id, chapter_name FROM chapters WHERE id = ? LIMIT 1",
@@ -231,14 +249,14 @@ export async function getAssessmentQuestions(req, res) {
     let source = "quiz_bank";
 
     if (topicIds.length > 0) {
-      // Pull from quiz bank
+      // Pull from quiz bank — use admin-configured question count
       const [qRows] = await db.query(
         `SELECT id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation
          FROM topic_quiz_bank
          WHERE topic_id IN (?)
          ORDER BY RAND()
-         LIMIT 10`,
-        [topicIds]
+         LIMIT ?`,
+        [topicIds, questionCount]
       );
       questions = qRows.map((q) => ({
         id: q.id,
@@ -255,7 +273,7 @@ export async function getAssessmentQuestions(req, res) {
     if (questions.length === 0) {
       // Fallback: generate questions from topic names
       source = "ai_generated";
-      questions = generatePlaceholderQuestions(chapter.chapter_name, topics.map(t => t.name));
+      questions = generatePlaceholderQuestions(chapter.chapter_name, topics.map(t => t.name), questionCount);
     }
 
     return res.json({
@@ -266,6 +284,9 @@ export async function getAssessmentQuestions(req, res) {
       source,
       questions,
       totalQuestions: questions.length,
+      totalMarks,
+      passingMarks,
+      questionCount,
     });
   } catch (err) {
     console.error("getAssessmentQuestions error:", err);
@@ -276,9 +297,8 @@ export async function getAssessmentQuestions(req, res) {
 /**
  * Generate smarter placeholder assessment questions using topic names.
  */
-function generatePlaceholderQuestions(chapterName, topicNames = []) {
+function generatePlaceholderQuestions(chapterName, topicNames = [], count = 10) {
   const questions = [];
-  const count = 10;
   
   for (let i = 1; i <= count; i++) {
     // Pick a topic to focus on for this question if available
@@ -325,11 +345,25 @@ export async function submitAssessment(req, res) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const teacherPassPct = parseFloat(await getConfigValue(db, "teacher_pass_percentage", "70"));
+    // Read per-chapter assessment settings first, then fall back to global config
+    let totalMarks, passingMarks;
+    try {
+      const [chapterCfg] = await db.query(
+        "SELECT total_marks, passing_marks FROM chapter_assessment_config WHERE chapter_id = ? LIMIT 1",
+        [chapterId]
+      );
+      if (chapterCfg.length > 0) {
+        totalMarks = chapterCfg[0].total_marks;
+        passingMarks = chapterCfg[0].passing_marks;
+      }
+    } catch (_) { /* table may not exist yet */ }
+    // Fall back to global config
+    if (!totalMarks) totalMarks = parseInt(await getConfigValue(db, "assessment_total_marks", "100")) || 100;
+    if (!passingMarks) passingMarks = parseInt(await getConfigValue(db, "assessment_passing_marks", "70")) || 70;
 
     // Grade the assessment
     let correct = 0;
-    const total = questions.length;
+    const totalQuestions = questions.length;
     const graded = [];
 
     for (const ans of answers) {
@@ -345,8 +379,11 @@ export async function submitAssessment(req, res) {
       });
     }
 
-    const percentage = total > 0 ? Math.round((correct / total) * 100 * 100) / 100 : 0;
-    const passed = percentage >= teacherPassPct;
+    // Calculate scored marks proportional to totalMarks
+    const marksPerQuestion = totalQuestions > 0 ? totalMarks / totalQuestions : 0;
+    const scoredMarks = Math.round(correct * marksPerQuestion * 100) / 100;
+    const percentage = totalQuestions > 0 ? Math.round((correct / totalQuestions) * 100 * 100) / 100 : 0;
+    const passed = scoredMarks >= passingMarks;
 
     // Get attempt number
     const [existingAttempts] = await db.query(
@@ -364,15 +401,18 @@ export async function submitAssessment(req, res) {
       `INSERT INTO teacher_chapter_assessments
          (teacher_id, chapter_id, subject_id, grade_id, class_id, score, total, percentage, passed, attempt_number, assessment_source)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [teacherId, chapterId, subjectId, gradeId, classId, correct, total, percentage, passed ? 1 : 0, attemptNumber, source]
+      [teacherId, chapterId, subjectId, gradeId, classId, correct, totalQuestions, percentage, passed ? 1 : 0, attemptNumber, source]
     );
 
     return res.json({
       passed,
       score: correct,
-      total,
+      total: totalQuestions,
+      scoredMarks,
+      totalMarks,
+      passingMarks,
       percentage,
-      passThreshold: teacherPassPct,
+      passThreshold: passingMarks,
       attemptNumber,
       graded,
     });
@@ -481,7 +521,7 @@ export async function updateGatingConfig(req, res) {
   const db = getPool();
   try {
     const updates = req.body;
-    const validKeys = ["teacher_pass_percentage", "student_threshold_percentage", "gating_enabled", "allow_manual_override"];
+    const validKeys = ["teacher_pass_percentage", "student_threshold_percentage", "gating_enabled", "allow_manual_override", "assessment_question_count", "assessment_total_marks", "assessment_passing_marks"];
     let updated = 0;
 
     for (const key of validKeys) {
@@ -497,6 +537,99 @@ export async function updateGatingConfig(req, res) {
     return res.json({ updated, ok: true });
   } catch (err) {
     console.error("updateGatingConfig error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * GET /api/chapter-gating/chapter-config/:subjectId
+ * Returns per-chapter assessment config for all chapters in a subject.
+ */
+export async function getChapterAssessmentConfig(req, res) {
+  const db = getPool();
+  try {
+    const { subjectId } = req.params;
+    if (!subjectId) return res.status(400).json({ error: "Missing subjectId" });
+
+    // Get global defaults
+    const globalQuestionCount = parseInt(await getConfigValue(db, "assessment_question_count", "10")) || 10;
+    const globalTotalMarks = parseInt(await getConfigValue(db, "assessment_total_marks", "100")) || 100;
+    const globalPassingMarks = parseInt(await getConfigValue(db, "assessment_passing_marks", "70")) || 70;
+
+    // Get all chapters for this subject
+    const [chapters] = await db.query(
+      "SELECT id, chapter_name, chapter_no, grade_id FROM chapters WHERE subject_id = ? ORDER BY grade_id, chapter_no",
+      [subjectId]
+    );
+
+    // Get per-chapter configs
+    const chapterIds = chapters.map(c => c.id);
+    let configMap = {};
+    if (chapterIds.length > 0) {
+      try {
+        const [configs] = await db.query(
+          "SELECT chapter_id, question_count, total_marks, passing_marks FROM chapter_assessment_config WHERE chapter_id IN (?)",
+          [chapterIds]
+        );
+        for (const cfg of configs) {
+          configMap[cfg.chapter_id] = cfg;
+        }
+      } catch (_) { /* table may not exist yet */ }
+    }
+
+    const result = chapters.map(ch => ({
+      chapterId: ch.id,
+      chapterName: ch.chapter_name,
+      chapterOrder: ch.chapter_no,
+      gradeId: ch.grade_id,
+      questionCount: configMap[ch.id]?.question_count ?? globalQuestionCount,
+      totalMarks: configMap[ch.id]?.total_marks ?? globalTotalMarks,
+      passingMarks: configMap[ch.id]?.passing_marks ?? globalPassingMarks,
+      isCustom: !!configMap[ch.id],
+    }));
+
+    return res.json({
+      subjectId,
+      globalDefaults: { questionCount: globalQuestionCount, totalMarks: globalTotalMarks, passingMarks: globalPassingMarks },
+      chapters: result,
+    });
+  } catch (err) {
+    console.error("getChapterAssessmentConfig error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * PUT /api/chapter-gating/chapter-config/:chapterId
+ * Body: { questionCount, totalMarks, passingMarks }
+ * Upserts per-chapter assessment config.
+ */
+export async function upsertChapterAssessmentConfig(req, res) {
+  const db = getPool();
+  try {
+    const { chapterId } = req.params;
+    const { questionCount, totalMarks, passingMarks } = req.body;
+
+    if (!chapterId) return res.status(400).json({ error: "Missing chapterId" });
+
+    const qCount = parseInt(questionCount);
+    const tMarks = parseInt(totalMarks);
+    const pMarks = parseInt(passingMarks);
+
+    if (!qCount || qCount < 1 || qCount > 50) return res.status(400).json({ error: "questionCount must be 1-50" });
+    if (!tMarks || tMarks < 1) return res.status(400).json({ error: "totalMarks must be > 0" });
+    if (!pMarks || pMarks < 1) return res.status(400).json({ error: "passingMarks must be > 0" });
+
+    await db.query(
+      `INSERT INTO chapter_assessment_config (chapter_id, question_count, total_marks, passing_marks)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE question_count = VALUES(question_count), total_marks = VALUES(total_marks), passing_marks = VALUES(passing_marks)`,
+      [chapterId, qCount, tMarks, pMarks]
+    );
+
+    return res.json({ ok: true, chapterId, questionCount: qCount, totalMarks: tMarks, passingMarks: pMarks });
+  } catch (err) {
+    console.error("upsertChapterAssessmentConfig error:", err);
     return res.status(500).json({ error: err.message });
   }
 }

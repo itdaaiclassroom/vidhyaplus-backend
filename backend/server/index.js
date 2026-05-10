@@ -2135,7 +2135,13 @@ app.post("/api/live-quiz", async (req, res) => {
   if (!teacherId || !classId || !chapterId || !topicId || !topicName || !subjectId) {
     return res.status(400).json({ error: "teacherId, classId, chapterId, topicId, topicName, subjectId are required" });
   }
-  const numQuestionsToCreate = noOfQuestions ? Math.min(Math.max(Number(noOfQuestions), 1), 30) : 10;
+  // Read admin-configured question count from gating_config (default: 10)
+  let adminQuestionCount = 10;
+  try {
+    const [cfgRows] = await db.query("SELECT config_value FROM gating_config WHERE config_key = 'assessment_question_count' LIMIT 1");
+    if (cfgRows && cfgRows[0]) adminQuestionCount = parseInt(cfgRows[0].config_value) || 10;
+  } catch (_) { /* gating_config may not exist yet */ }
+  const numQuestionsToCreate = noOfQuestions ? Math.min(Math.max(Number(noOfQuestions), 1), adminQuestionCount) : adminQuestionCount;
   try {
     liveQuizCheckpoint("POST /api/live-quiz:request", { teacherId, classId, subjectId, topicId, liveSessionId });
     const liveSessionIdNum = liveSessionId != null ? Number(liveSessionId) : null;

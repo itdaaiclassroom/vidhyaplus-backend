@@ -6,6 +6,8 @@ import {
   computeStudentPerformance,
   getGatingConfig,
   updateGatingConfig,
+  getChapterAssessmentConfig,
+  upsertChapterAssessmentConfig,
   createOverride,
   deleteOverride,
   getOverrides,
@@ -36,6 +38,10 @@ router.get("/config", getGatingConfig);
 
 // Update gating configuration (admin only)
 router.put("/config", authorizeRole(["admin"]), updateGatingConfig);
+
+// Per-chapter assessment config (admin only)
+router.get("/chapter-config/:subjectId", getChapterAssessmentConfig);
+router.put("/chapter-config/:chapterId", authorizeRole(["admin"]), upsertChapterAssessmentConfig);
 
 // Create/update manual override (admin only)
 router.post("/override", authorizeRole(["admin"]), createOverride);
