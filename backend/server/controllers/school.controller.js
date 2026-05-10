@@ -1,4 +1,5 @@
 import getPool from "../config/db.js";
+import { auditLog, actorFromReq } from "../utils/auditLogger.js";
 
 export async function createSchool(req, res) {
   const db = getPool();
@@ -30,6 +31,19 @@ export async function createSchool(req, res) {
       mandal: mandal != null ? String(mandal).trim() : null,
       principal_id: principalId ? String(principalId) : null
     });
+
+    // Audit log after response is sent
+    auditLog(db, {
+      ...actorFromReq(req),
+      action: "CREATE", entity: "school", entity_id: String(schoolId),
+      meta: {
+        name: String(name).trim(), code: String(code).trim(),
+        district: String(district || "").trim(),
+        mandal: mandal != null ? String(mandal).trim() : null,
+        principal_id: principalId ? String(principalId) : null,
+      },
+      req,
+    });
   } catch (err) {
     console.error("POST /api/schools error:", err);
     res.status(500).json({ error: String(err.message) });
@@ -53,6 +67,12 @@ export async function updateSchool(req, res) {
     if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
     values.push(id);
     await db.query(`UPDATE schools SET ${updates.join(", ")} WHERE id = ?`, values);
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "UPDATE", entity: "school", entity_id: String(id),
+      meta: { changed_fields: Object.fromEntries(updates.map((u, i) => [u.replace(" = ?",""), values[i]])) },
+      req,
+    });
     res.json({ id: String(id), updated: true });
   } catch (err) {
     console.error("PUT /api/schools error:", err);
@@ -120,6 +140,16 @@ export async function deleteSchool(req, res) {
     
     await connection.commit();
     res.json({ deleted: r.affectedRows > 0 });
+
+    // Audit log after successful deletion
+    if (r.affectedRows > 0) {
+      auditLog(db, {
+        ...actorFromReq(req),
+        action: "DELETE", entity: "school", entity_id: String(id),
+        meta: { school_id: id },
+        req,
+      });
+    }
   } catch (err) {
     await connection.rollback();
     console.error("DELETE /api/schools error:", err);

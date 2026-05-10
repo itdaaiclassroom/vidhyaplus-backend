@@ -1,5 +1,6 @@
 import getPool from "../config/db.js";
 import bcrypt from "bcrypt";
+import { auditLog, actorFromReq } from "../utils/auditLogger.js";
 
 const SALT_ROUNDS = 10;
 
@@ -96,10 +97,20 @@ export async function createAnnouncement(req, res) {
   if (!title || !message) return res.status(400).json({ error: "Title and message required" });
 
   try {
-    await db.query(
+    const [result] = await db.query(
       "INSERT INTO announcements (sender_admin_id, title, message, target_role, target_school_id) VALUES (?, ?, ?, ?, ?)",
       [adminId, title, message, target_role || 'teacher', target_school_id || null]
     );
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action:    "CREATE",
+      entity:    "announcement",
+      entity_id: String(result.insertId),
+      meta:      { title, target_role: target_role || "teacher", target_school_id: target_school_id || null },
+      req,
+    });
+
     res.json({ ok: true, message: "Announcement sent" });
   } catch (err) {
     console.error("Create announcement error:", err);
@@ -203,12 +214,24 @@ export async function createAdmin(req, res) {
       [String(name).trim(), String(email).trim().toLowerCase(), hashed, role || "admin"]
     );
 
+    const newId = String(result.insertId);
+    const finalRole = role || "admin";
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action:    "CREATE",
+      entity:    "admin",
+      entity_id: newId,
+      meta:      { name: String(name).trim(), email: String(email).trim().toLowerCase(), role: finalRole },
+      req,
+    });
+
     res.status(201).json({
       ok: true,
-      id: String(result.insertId),
+      id: newId,
       name: String(name).trim(),
       email: String(email).trim().toLowerCase(),
-      role: role || "admin"
+      role: finalRole
     });
   } catch (err) {
     res.status(500).json({ error: String(err.message) });
@@ -226,20 +249,32 @@ export async function updateAdmin(req, res) {
   try {
     const updates = [];
     const values = [];
+    const changedFields = {};
 
-    if (name !== undefined) { updates.push("name = ?"); values.push(String(name).trim()); }
-    if (email !== undefined) { updates.push("email = ?"); values.push(String(email).trim().toLowerCase()); }
+    if (name !== undefined) { updates.push("name = ?"); values.push(String(name).trim()); changedFields.name = String(name).trim(); }
+    if (email !== undefined) { updates.push("email = ?"); values.push(String(email).trim().toLowerCase()); changedFields.email = String(email).trim().toLowerCase(); }
     if (password !== undefined && password !== "") {
       const hashed = await hashPassword(password);
       updates.push("password = ?");
       values.push(hashed);
+      changedFields.password = "[CHANGED]";
     }
-    if (role !== undefined) { updates.push("role = ?"); values.push(String(role).trim()); }
+    if (role !== undefined) { updates.push("role = ?"); values.push(String(role).trim()); changedFields.role = String(role).trim(); }
 
     if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
 
     values.push(id);
     await db.query(`UPDATE admins SET ${updates.join(", ")} WHERE id = ?`, values);
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action:    "UPDATE",
+      entity:    "admin",
+      entity_id: String(id),
+      meta:      { changed_fields: changedFields },
+      req,
+    });
+
     res.json({ ok: true, id: String(id) });
   } catch (err) {
     res.status(500).json({ error: String(err.message) });
@@ -260,6 +295,15 @@ export async function deleteAdmin(req, res) {
   try {
     const [result] = await db.query("DELETE FROM admins WHERE id = ?", [id]);
     if (result.affectedRows === 0) return res.status(404).json({ error: "Admin not found" });
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action:    "DELETE",
+      entity:    "admin",
+      entity_id: String(id),
+      req,
+    });
+
     res.json({ ok: true, deleted: true });
   } catch (err) {
     res.status(500).json({ error: String(err.message) });
@@ -340,9 +384,26 @@ export async function createTeam(req, res) {
       ]
     );
 
+    const newId = String(result.insertId);
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action:    "CREATE",
+      entity:    "team",
+      entity_id: newId,
+      meta:      {
+        team_name: String(team_name).trim(),
+        email:     String(email).trim().toLowerCase(),
+        role:      String(role).trim(),
+        district:  district || null,
+        created_by: createdBy,
+      },
+      req,
+    });
+
     res.status(201).json({
       ok: true,
-      id: String(result.insertId),
+      id: newId,
       team_name: String(team_name).trim(),
       email: String(email).trim().toLowerCase(),
       role: String(role).trim(),
@@ -364,22 +425,34 @@ export async function updateTeam(req, res) {
   try {
     const updates = [];
     const values = [];
+    const changedFields = {};
 
-    if (team_name !== undefined) { updates.push("team_name = ?"); values.push(String(team_name).trim()); }
-    if (email !== undefined) { updates.push("email = ?"); values.push(String(email).trim().toLowerCase()); }
+    if (team_name !== undefined) { updates.push("team_name = ?"); values.push(String(team_name).trim()); changedFields.team_name = String(team_name).trim(); }
+    if (email !== undefined) { updates.push("email = ?"); values.push(String(email).trim().toLowerCase()); changedFields.email = String(email).trim().toLowerCase(); }
     if (password !== undefined && password !== "") {
       const hashed = await hashPassword(password);
       updates.push("password = ?");
       values.push(hashed);
+      changedFields.password = "[CHANGED]";
     }
-    if (role !== undefined) { updates.push("role = ?"); values.push(String(role).trim()); }
-    if (district !== undefined) { updates.push("district = ?"); values.push(district ? String(district).trim() : null); }
-    if (is_active !== undefined) { updates.push("is_active = ?"); values.push(is_active ? 1 : 0); }
+    if (role !== undefined) { updates.push("role = ?"); values.push(String(role).trim()); changedFields.role = String(role).trim(); }
+    if (district !== undefined) { updates.push("district = ?"); values.push(district ? String(district).trim() : null); changedFields.district = district || null; }
+    if (is_active !== undefined) { updates.push("is_active = ?"); values.push(is_active ? 1 : 0); changedFields.is_active = is_active ? 1 : 0; }
 
     if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
 
     values.push(id);
     await db.query(`UPDATE admin_teams SET ${updates.join(", ")} WHERE id = ?`, values);
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action:    "UPDATE",
+      entity:    "team",
+      entity_id: String(id),
+      meta:      { changed_fields: changedFields },
+      req,
+    });
+
     res.json({ ok: true, id: String(id) });
   } catch (err) {
     res.status(500).json({ error: String(err.message) });
@@ -395,6 +468,15 @@ export async function deleteTeam(req, res) {
   try {
     const [result] = await db.query("DELETE FROM admin_teams WHERE id = ?", [id]);
     if (result.affectedRows === 0) return res.status(404).json({ error: "Team not found" });
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action:    "DELETE",
+      entity:    "team",
+      entity_id: String(id),
+      req,
+    });
+
     res.json({ ok: true, deleted: true });
   } catch (err) {
     res.status(500).json({ error: String(err.message) });
@@ -439,6 +521,74 @@ export async function getSubjectPerformance(req, res) {
     res.json(performance);
   } catch (err) {
     console.error("Subject performance error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   AUDIT LOGS — System-wide query endpoint
+   GET /api/admin/audit-logs
+   Query params (all optional):
+     actor_role, entity, action, from, to, page, limit
+═══════════════════════════════════════════════ */
+
+/**
+ * GET /api/admin/audit-logs
+ * Returns a paginated, filterable view of the system-wide audit trail.
+ * Only accessible by admins (enforced at the router level).
+ */
+export async function getAuditLogs(req, res) {
+  const db = getPool();
+
+  // ── Pagination ───────────────────────────────────────────────────────────
+  const page  = Math.max(1, parseInt(req.query.page  || "1", 10));
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || "50", 10)));
+  const offset = (page - 1) * limit;
+
+  // ── Filters ──────────────────────────────────────────────────────────────
+  const { actor_role, entity, action, from, to, actor_id } = req.query;
+
+  const conditions = [];
+  const params     = [];
+
+  if (actor_id)   { conditions.push("actor_id = ?");   params.push(String(actor_id)); }
+  if (actor_role) { conditions.push("actor_role = ?"); params.push(String(actor_role)); }
+  if (entity)     { conditions.push("entity = ?");     params.push(String(entity).toLowerCase()); }
+  if (action)     { conditions.push("action = ?");     params.push(String(action).toUpperCase()); }
+  if (from)       { conditions.push("created_at >= ?"); params.push(`${from} 00:00:00`); }
+  if (to)         { conditions.push("created_at <= ?"); params.push(`${to} 23:59:59`); }
+
+  const whereClause = conditions.length > 0
+    ? `WHERE ${conditions.join(" AND ")}`
+    : "";
+
+  try {
+    // Count total matching records for pagination metadata
+    const [[{ total }]] = await db.query(
+      `SELECT COUNT(*) AS total FROM audit_logs ${whereClause}`,
+      params
+    );
+
+    // Fetch the page of records
+    const [rows] = await db.query(
+      `SELECT id, actor_id, actor_role, actor_name, action, entity, entity_id,
+              meta, ip_address, user_agent, status, error_msg, created_at
+       FROM audit_logs
+       ${whereClause}
+       ORDER BY created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    res.json({
+      total: Number(total),
+      page,
+      limit,
+      total_pages: Math.ceil(Number(total) / limit),
+      data: rows,
+    });
+  } catch (err) {
+    console.error("getAuditLogs error:", err);
     res.status(500).json({ error: String(err.message) });
   }
 }

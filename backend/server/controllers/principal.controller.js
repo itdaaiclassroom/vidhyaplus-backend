@@ -1,6 +1,7 @@
 import getPool from "../config/db.js";
 import { generateStudentQRIds } from "./student.controller.js";
 import * as assetStorage from "../storage.js";
+import { auditLog, actorFromReq } from "../utils/auditLogger.js";
 
 export async function getPrincipalProfile(req, res) {
   const db = getPool();
@@ -40,6 +41,12 @@ export async function registerTeacherByPrincipal(req, res) {
         await db.query("INSERT INTO teacher_subjects (teacher_id, subject_id) VALUES (?, ?)", [teacherId, Number(subjectId)]);
       }
     }
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "CREATE", entity: "teacher", entity_id: String(teacherId),
+      meta: { full_name, email, school_id: String(school_id), registered_by: "principal" },
+      req,
+    });
     res.status(201).json({ ok: true, teacher_id: String(teacherId) });
   } catch (err) {
     console.error("Teacher registration error:", err);
@@ -93,6 +100,13 @@ export async function registerStudentByPrincipal(req, res) {
     // Generate QR IDs (no images)
     await generateStudentQRIds(db, studentId);
     
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "CREATE", entity: "student", entity_id: String(studentId),
+      meta: { first_name, last_name, school_id: String(school_id), section_id: String(section_id) },
+      req,
+    });
+
     res.status(201).json({ 
       ok: true, 
       student_id: String(studentId),
@@ -247,6 +261,11 @@ export async function createSubject(req, res) {
       "INSERT INTO subjects (subject_name) VALUES (?)",
       [name]
     );
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "CREATE", entity: "subject", entity_id: String(result.insertId),
+      meta: { subject_name: name }, req,
+    });
     res.status(201).json({ ok: true, subject: { id: result.insertId, subject_name: name } });
   } catch (err) {
     console.error("POST /api/principal/subjects error:", err);
@@ -278,6 +297,11 @@ export async function updateSubject(req, res) {
       return res.status(409).json({ error: `Subject '${name}' already exists` });
     }
     await db.query("UPDATE subjects SET subject_name = ? WHERE id = ?", [name, subjectId]);
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "UPDATE", entity: "subject", entity_id: String(subjectId),
+      meta: { subject_name: name }, req,
+    });
     res.json({ ok: true, subject: { id: subjectId, subject_name: name } });
   } catch (err) {
     console.error("PUT /api/principal/subjects/:subjectId error:", err);
@@ -307,6 +331,11 @@ export async function deleteSubject(req, res) {
       });
     }
     await db.query("DELETE FROM subjects WHERE id = ?", [subjectId]);
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "DELETE", entity: "subject", entity_id: String(subjectId),
+      req,
+    });
     res.json({ ok: true, deleted: true });
   } catch (err) {
     console.error("DELETE /api/principal/subjects/:subjectId error:", err);
@@ -376,7 +405,11 @@ export async function assignTeacherSubjectsAndClasses(req, res) {
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: "Teacher not found" });
     }
-
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "UPDATE", entity: "teacher_assignment", entity_id: String(teacherId),
+      meta: { assigned_subject_ids, assigned_class_ids, assigned_section_ids }, req,
+    });
     res.json({ ok: true, message: "Teacher assignments updated successfully" });
   } catch (err) {
     console.error("PUT /api/principal/teachers/:teacherId/assignments error:", err);
@@ -413,6 +446,11 @@ export async function updateTeacherSubjects(req, res) {
         );
       }
     }
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "UPDATE", entity: "teacher_subjects", entity_id: String(teacherId),
+      meta: { subject_ids: subjects }, req,
+    });
     res.json({ ok: true, message: "Teacher subjects updated successfully", teacher_id: teacherId, subject_ids: subjects });
   } catch (err) {
     console.error("PUT /api/principal/teachers/:teacherId/subjects error:", err);
@@ -519,6 +557,13 @@ export async function createSection(req, res) {
       [schoolId, gradeId, code]
     );
 
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "CREATE", entity: "section", entity_id: String(result.insertId),
+      meta: { school_id: schoolId, grade_id: gradeId, section_code: code },
+      req,
+    });
+
     res.status(201).json({
       ok: true,
       section: {
@@ -569,6 +614,11 @@ export async function updateSection(req, res) {
     }
 
     await db.query("UPDATE sections SET section_code = ? WHERE id = ?", [code, sectionId]);
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "UPDATE", entity: "section", entity_id: String(sectionId),
+      meta: { section_code: code, school_id: schoolId }, req,
+    });
     res.json({ ok: true, id: sectionId, section_code: code });
   } catch (err) {
     console.error("PUT /api/principal/sections error:", err);
@@ -608,6 +658,11 @@ export async function deleteSection(req, res) {
     }
 
     await db.query("DELETE FROM sections WHERE id = ?", [sectionId]);
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "DELETE", entity: "section", entity_id: String(sectionId),
+      meta: { school_id: schoolId }, req,
+    });
     res.json({ ok: true, deleted: true });
   } catch (err) {
     console.error("DELETE /api/principal/sections error:", err);

@@ -1,5 +1,6 @@
 import getPool from "../config/db.js";
 import * as assetStorage from "../storage.js";
+import { auditLog, actorFromReq } from "../utils/auditLogger.js";
 
 export async function createTeacher(req, res) {
   const db = getPool();
@@ -18,6 +19,12 @@ export async function createTeacher(req, res) {
       [String(full_name).trim(), emailVal, Number(school_id), passwordPlain]
     );
     const teacherId = insertResult.insertId;
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "CREATE", entity: "teacher", entity_id: String(teacherId),
+      meta: { full_name: String(full_name).trim(), email: emailVal, school_id: String(school_id) },
+      req,
+    });
     res.status(201).json({ id: String(teacherId), full_name: String(full_name).trim(), email: emailVal, school_id: String(school_id) });
   } catch (err) {
     console.error("POST /api/teachers error:", err);
@@ -33,18 +40,25 @@ export async function updateTeacher(req, res) {
   try {
     const updates = [];
     const values = [];
-    if (full_name !== undefined) { updates.push("full_name = ?"); values.push(String(full_name).trim()); }
-    if (email !== undefined) { updates.push("email = ?"); values.push(String(email).trim()); }
-    if (school_id !== undefined) { updates.push("school_id = ?"); values.push(Number(school_id)); }
+    const changedFields = {};
+    if (full_name !== undefined) { updates.push("full_name = ?"); values.push(String(full_name).trim()); changedFields.full_name = String(full_name).trim(); }
+    if (email !== undefined) { updates.push("email = ?"); values.push(String(email).trim()); changedFields.email = String(email).trim(); }
+    if (school_id !== undefined) { updates.push("school_id = ?"); values.push(Number(school_id)); changedFields.school_id = String(school_id); }
     if (password !== undefined) {
       const plain = password && String(password).trim() ? String(password).trim() : null;
       updates.push("password = ?");
       values.push(plain);
+      changedFields.password = "[CHANGED]";
     }
     if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
     values.push(id);
     await db.query(`UPDATE teachers SET ${updates.join(", ")} WHERE id = ?`, values);
-    console.log('TEACHER ASSIGNMENTS API CALLED FOR ID:', id, 'SUBJECTS:', subjectIds, 'SECTIONS:', sectionIds); res.json({ id: String(id), updated: true });
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "UPDATE", entity: "teacher", entity_id: String(id),
+      meta: { changed_fields: changedFields }, req,
+    });
+    res.json({ id: String(id), updated: true });
   } catch (err) {
     console.error("PUT /api/teachers error:", err);
     res.status(500).json({ error: String(err.message) });
@@ -57,6 +71,12 @@ export async function deleteTeacher(req, res) {
   if (!id) return res.status(400).json({ error: "id required" });
   try {
     const [r] = await db.query("DELETE FROM teachers WHERE id = ?", [id]);
+    if (r.affectedRows > 0) {
+      await auditLog(db, {
+        ...actorFromReq(req),
+        action: "DELETE", entity: "teacher", entity_id: String(id), req,
+      });
+    }
     res.json({ deleted: r.affectedRows > 0 });
   } catch (err) {
     console.error("DELETE /api/teachers error:", err);
@@ -126,6 +146,19 @@ export async function bulkCreateTeachers(req, res) {
   }
 
   res.status(200).json(results);
+
+  // Log a single aggregated entry for the bulk operation (non-blocking, after response)
+  auditLog(db, {
+    ...actorFromReq(req),
+    action: "CREATE", entity: "teacher_bulk", entity_id: null,
+    meta: {
+      total_submitted:  teachers.length,
+      total_successful: results.successful.length,
+      total_failed:     results.failed.length,
+      successful_ids:   results.successful.map(t => t.id),
+    },
+    req,
+  });
 }
 
 export async function getTeacherDashboard(req, res) {
@@ -211,6 +244,17 @@ export async function markTeacherAttendance(req, res) {
         [teacher_id, school_id, date, status]
       );
     }
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "UPDATE", entity: "teacher_attendance", entity_id: null,
+      meta: {
+        attendance_date: date,
+        records_updated: attendance.filter(r => r.teacher_id && r.school_id && r.status).length,
+      },
+      req,
+    });
+
     res.json({ ok: true, message: "Teacher attendance marked successfully" });
   } catch (err) {
     console.error("POST /api/teachers/attendance error:", err);
