@@ -90,53 +90,67 @@ export async function deleteSchool(req, res) {
     await connection.beginTransaction();
 
     // 1. Find all sections and classes belonging to this school
-    const [sections] = await connection.query("SELECT id FROM sections WHERE school_id = ?", [id]);
+    let sections = [];
+    try {
+      const [rows] = await connection.query("SELECT id FROM sections WHERE school_id = ?", [id]);
+      sections = rows;
+    } catch (e) { throw new Error(`Step 1 (Find sections) failed: ${e.message}`); }
     const sectionIds = sections.map(s => s.id);
     
     // 2. Find all students belonging to this school or these sections
     let studentIds = [];
-    const [s1] = await connection.query("SELECT id FROM students WHERE school_id = ?", [id]);
-    studentIds = s1.map(r => r.id);
+    try {
+      const [s1] = await connection.query("SELECT id FROM students WHERE school_id = ?", [id]);
+      studentIds = s1.map(r => r.id);
+    } catch (e) { throw new Error(`Step 2a (Find students by school_id) failed: ${e.message}`); }
     
     if (sectionIds.length > 0) {
-      const [s2] = await connection.query("SELECT id FROM students WHERE section_id IN (?)", [sectionIds]);
-      s2.forEach(r => { if (!studentIds.includes(r.id)) studentIds.push(r.id); });
+      try {
+        const [s2] = await connection.query("SELECT id FROM students WHERE section_id IN (?)", [sectionIds]);
+        s2.forEach(r => { if (!studentIds.includes(r.id)) studentIds.push(r.id); });
+      } catch (e) { throw new Error(`Step 2b (Find students by section_id) failed: ${e.message}`); }
     }
 
     // 3. Delete Student Dependencies
     if (studentIds.length > 0) {
-      // Use chunks if there are many students, but for school deletion it's usually manageable
-      await connection.query("DELETE FROM student_marks WHERE student_id IN (?)", [studentIds]);
-      await connection.query("DELETE FROM attendance WHERE student_id IN (?)", [studentIds]);
-      await connection.query("DELETE FROM student_qr_codes WHERE student_id IN (?)", [studentIds]);
-      await connection.query("DELETE FROM student_usage_logs WHERE student_id IN (?)", [studentIds]);
-      await connection.query("DELETE FROM live_quiz_answers WHERE student_id IN (?)", [studentIds]);
-      await connection.query("DELETE FROM leave_applications WHERE student_id IN (?)", [studentIds]);
-      await connection.query("DELETE FROM students WHERE id IN (?)", [studentIds]);
+      try { await connection.query("DELETE FROM student_marks WHERE student_id IN (?)", [studentIds]); } catch (e) { throw new Error(`Step 3a (Delete student_marks) failed: ${e.message}`); }
+      try { await connection.query("DELETE FROM attendance WHERE student_id IN (?)", [studentIds]); } catch (e) { throw new Error(`Step 3b (Delete attendance) failed: ${e.message}`); }
+      try { await connection.query("DELETE FROM student_qr_codes WHERE student_id IN (?)", [studentIds]); } catch (e) { throw new Error(`Step 3c (Delete student_qr_codes) failed: ${e.message}`); }
+      try { await connection.query("DELETE FROM student_usage_logs WHERE student_id IN (?)", [studentIds]).catch(() => {}); } catch (e) { /* ignore usage logs if table missing */ }
+      try { await connection.query("DELETE FROM live_quiz_answers WHERE student_id IN (?)", [studentIds]); } catch (e) { throw new Error(`Step 3e (Delete live_quiz_answers) failed: ${e.message}`); }
+      try { await connection.query("DELETE FROM leave_applications WHERE student_id IN (?)", [studentIds]).catch(() => {}); } catch (e) { /* ignore leave apps if table missing */ }
+      try { await connection.query("DELETE FROM students WHERE id IN (?)", [studentIds]); } catch (e) { throw new Error(`Step 3g (Delete students) failed: ${e.message}`); }
     }
 
     // 4. Delete Teacher Dependencies
-    const [teachers] = await connection.query("SELECT id FROM teachers WHERE school_id = ?", [id]);
+    let teachers = [];
+    try {
+      const [rows] = await connection.query("SELECT id FROM teachers WHERE school_id = ?", [id]);
+      teachers = rows;
+    } catch (e) { throw new Error(`Step 4a (Find teachers) failed: ${e.message}`); }
     const teacherIds = teachers.map(t => t.id);
+    
     if (teacherIds.length > 0) {
-      await connection.query("DELETE FROM teacher_attendance WHERE teacher_id IN (?)", [teacherIds]);
-      await connection.query("DELETE FROM teacher_activity_logs WHERE teacher_id IN (?)", [teacherIds]);
-      await connection.query("DELETE FROM teachers WHERE id IN (?)", [teacherIds]);
+      try { await connection.query("DELETE FROM teacher_attendance WHERE teacher_id IN (?)", [teacherIds]); } catch (e) { throw new Error(`Step 4b (Delete teacher_attendance) failed: ${e.message}`); }
+      try { await connection.query("DELETE FROM teacher_activity_logs WHERE teacher_id IN (?)", [teacherIds]).catch(() => {}); } catch (e) { /* ignore activity logs if table missing */ }
+      try { await connection.query("DELETE FROM teachers WHERE id IN (?)", [teacherIds]); } catch (e) { throw new Error(`Step 4d (Delete teachers) failed: ${e.message}`); }
     }
 
     // 5. Delete Session Dependencies
-    await connection.query("DELETE FROM live_sessions WHERE school_id = ?", [id]);
     if (sectionIds.length > 0) {
-      await connection.query("DELETE FROM live_sessions WHERE class_id IN (?)", [sectionIds]);
-      // Remove any other table that might point to sections
-      await connection.query("DELETE FROM sections WHERE id IN (?)", [sectionIds]);
+      try { await connection.query("DELETE FROM live_sessions WHERE class_id IN (?)", [sectionIds]); } catch (e) { throw new Error(`Step 5a (Delete live_sessions) failed: ${e.message}`); }
+      try { await connection.query("DELETE FROM sections WHERE id IN (?)", [sectionIds]); } catch (e) { throw new Error(`Step 5b (Delete sections) failed: ${e.message}`); }
     }
-
-    // 6. Delete Classes
-    await connection.query("DELETE FROM classes WHERE school_id = ?", [id]);
+    
+    // 6. Delete Admin-School Mappings
+    try { await connection.query("DELETE FROM admin_schools WHERE school_id = ?", [id]); } catch (e) { throw new Error(`Step 6 (Delete admin_schools) failed: ${e.message}`); }
     
     // 7. Finally Delete the School
-    const [r] = await connection.query("DELETE FROM schools WHERE id = ?", [id]);
+    let r;
+    try {
+      const [rows] = await connection.query("DELETE FROM schools WHERE id = ?", [id]);
+      r = rows;
+    } catch (e) { throw new Error(`Step 7 (Delete school) failed: ${e.message}`); }
     
     await connection.commit();
     res.json({ deleted: r.affectedRows > 0 });

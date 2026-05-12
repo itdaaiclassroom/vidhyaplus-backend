@@ -32,10 +32,12 @@ router.get("/schools/:schoolId/students", getSchoolStudents);
 router.get("/schools/:schoolId/teachers", getSchoolTeachers);
 
 // Dashboard Overviews
-import { getTeacherAttendanceSummary, getStudentAttendanceSummary, getPrincipalOverview } from "../controllers/principal.controller.js";
+import { getTeacherAttendanceSummary, getStudentAttendanceSummary, getPrincipalOverview, getSchoolRanking, getBroadcastMessages } from "../controllers/principal.controller.js";
 router.get("/dashboard/teacher-attendance-summary", getTeacherAttendanceSummary);
 router.get("/dashboard/student-attendance-summary", getStudentAttendanceSummary);
 router.get("/dashboard/overview", getPrincipalOverview);
+router.get("/dashboard/school-ranking", getSchoolRanking);
+router.get("/dashboard/broadcast-messages", getBroadcastMessages);
 
 // Subjects master list CRUD
 router.get("/subjects", getSubjects);
