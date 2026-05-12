@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import { auditLog, actorFromReq } from "../utils/auditLogger.js";
 
 const SALT_ROUNDS = 10;
+const ALLOWED_TEAM_ROLES = ["material_management"];
 
 /* ──────────────────────────────────────────────
    Helpers
@@ -360,6 +361,10 @@ export async function createTeam(req, res) {
     return res.status(400).json({ error: "team_name, email, password and role are required" });
   }
 
+  if (!ALLOWED_TEAM_ROLES.includes(role)) {
+    return res.status(400).json({ error: `Invalid role. Allowed roles are: ${ALLOWED_TEAM_ROLES.join(", ")}` });
+  }
+
   try {
     // Check duplicate email
     const [existing] = await db.query(
@@ -435,7 +440,14 @@ export async function updateTeam(req, res) {
       values.push(hashed);
       changedFields.password = "[CHANGED]";
     }
-    if (role !== undefined) { updates.push("role = ?"); values.push(String(role).trim()); changedFields.role = String(role).trim(); }
+    if (role !== undefined) { 
+      if (!ALLOWED_TEAM_ROLES.includes(role)) {
+        return res.status(400).json({ error: `Invalid role. Allowed roles are: ${ALLOWED_TEAM_ROLES.join(", ")}` });
+      }
+      updates.push("role = ?"); 
+      values.push(String(role).trim()); 
+      changedFields.role = String(role).trim(); 
+    }
     if (district !== undefined) { updates.push("district = ?"); values.push(district ? String(district).trim() : null); changedFields.district = district || null; }
     if (is_active !== undefined) { updates.push("is_active = ?"); values.push(is_active ? 1 : 0); changedFields.is_active = is_active ? 1 : 0; }
 
