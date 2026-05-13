@@ -1,5 +1,5 @@
 import express from "express";
-import { createTeacher, updateTeacher, deleteTeacher, bulkCreateTeachers, getTeacherDashboard, markTeacherAttendance, getTeacherAttendance, getTeacherAssignments, markSelfAttendance, getTodayAttendance } from "../controllers/teacher.controller.js";
+import { createTeacher, updateTeacher, deleteTeacher, bulkCreateTeachers, getTeacherDashboard, markTeacherAttendance, getTeacherAttendance, getTeacherAssignments, markSelfAttendance, getTodayAttendance, getTeacherAssessments } from "../controllers/teacher.controller.js";
 import { getSchoolStudents } from "../controllers/principal.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -14,6 +14,7 @@ router.get("/dashboard/:id", authenticateJWT, getTeacherDashboard);
 router.get("/:id/assignments", authenticateJWT, getTeacherAssignments);
 router.post("/:id/attendance", authenticateJWT, markSelfAttendance);
 router.get("/:id/attendance/today", authenticateJWT, getTodayAttendance);
+router.get("/:id/assessments", authenticateJWT, getTeacherAssessments);
 router.put("/:id", authenticateJWT, authorizeRole(["admin", "principal"]), updateTeacher);
 router.delete("/:id", authenticateJWT, authorizeRole(["admin", "principal"]), deleteTeacher);
 

@@ -4,8 +4,8 @@ import getPool from "../config/db.js";
 async function check() {
   const db = getPool();
   try {
-    const [rows] = await db.query(`SELECT id, email, full_name, role, assigned_subject_ids, assigned_class_ids FROM teachers LIMIT 20`);
-    console.log(`Teachers Table:`);
+    const [rows] = await db.query(`SELECT * FROM sections WHERE id = 52`);
+    console.log(`Section 52:`);
     console.table(rows);
   } catch (e) {
     console.error(`Error:`, e.message);

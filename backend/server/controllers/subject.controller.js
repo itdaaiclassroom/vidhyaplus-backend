@@ -328,6 +328,7 @@ export async function bulkUploadSubjectQuestions(req, res) {
       const explanation   = keys["explanation"] || keys["explain"] || null;
       const chapter       = keys["chapter"] || null;
       const rawGrade      = keys["grade"] || keys["class"] || null;
+      const assignedFor   = keys["assigned for"] || keys["assigned"] || "both";
 
       // --- Validate required fields ---
       if (!questionText) {
@@ -357,6 +358,7 @@ export async function bulkUploadSubjectQuestions(req, res) {
         optionD,
         correctOption,
         explanation && explanation.length > 0 ? explanation : null,
+        assignedFor,
         uploadedBy,
         uploadedById,
       ]);
@@ -369,7 +371,7 @@ export async function bulkUploadSubjectQuestions(req, res) {
         `INSERT INTO subject_quiz_bank
           (subject_id, chapter, grade, question_text,
            option_a, option_b, option_c, option_d,
-           correct_option, explanation, uploaded_by, uploaded_by_id)
+           correct_option, explanation, assigned_for, uploaded_by, uploaded_by_id)
          VALUES ?`,
         [validRows]
       );
@@ -416,7 +418,7 @@ export async function createSubjectQuestion(req, res) {
 
   const {
     question_text, option_a, option_b, option_c, option_d,
-    correct_option, explanation, chapter, grade,
+    correct_option, explanation, chapter, grade, assigned_for
   } = req.body;
 
   if (!question_text || !option_a || !option_b || !option_c || !option_d) {
@@ -436,8 +438,8 @@ export async function createSubjectQuestion(req, res) {
       `INSERT INTO subject_quiz_bank
         (subject_id, chapter, grade, question_text,
          option_a, option_b, option_c, option_d,
-         correct_option, explanation, uploaded_by, uploaded_by_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         correct_option, explanation, assigned_for, uploaded_by, uploaded_by_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         subjectId,
         chapter || null,
@@ -446,6 +448,7 @@ export async function createSubjectQuestion(req, res) {
         option_a, option_b, option_c, option_d,
         normalizedCorrect,
         explanation || null,
+        assigned_for || 'both',
         actor.actor_name,
         actor.actor_id,
       ]
@@ -500,7 +503,7 @@ export async function getSubjectQuestionBank(req, res) {
     const [rows] = await db.query(
       `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade,
               sqb.question_text, sqb.option_a, sqb.option_b, sqb.option_c, sqb.option_d,
-              sqb.correct_option, sqb.explanation, sqb.uploaded_by, sqb.created_at
+              sqb.correct_option, sqb.explanation, sqb.assigned_for, sqb.uploaded_by, sqb.created_at
        FROM subject_quiz_bank sqb
        JOIN subjects s ON s.id = sqb.subject_id
        ${where}
@@ -563,7 +566,7 @@ export async function getQuestionBank(req, res) {
     const [rows] = await db.query(
       `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade,
               sqb.question_text, sqb.option_a, sqb.option_b, sqb.option_c, sqb.option_d,
-              sqb.correct_option, sqb.explanation, sqb.uploaded_by, sqb.created_at
+              sqb.correct_option, sqb.explanation, sqb.assigned_for, sqb.uploaded_by, sqb.created_at
        FROM subject_quiz_bank sqb
        JOIN subjects s ON s.id = sqb.subject_id
        ${where}
@@ -600,7 +603,7 @@ export async function updateSubjectQuestion(req, res) {
 
   const {
     question_text, option_a, option_b, option_c, option_d,
-    correct_option, explanation, chapter, grade,
+    correct_option, explanation, chapter, grade, assigned_for
   } = req.body;
 
   try {
@@ -615,6 +618,7 @@ export async function updateSubjectQuestion(req, res) {
     if (explanation !== undefined)   { updates.push("explanation = ?");   values.push(explanation || null); }
     if (chapter !== undefined)       { updates.push("chapter = ?");       values.push(chapter || null); }
     if (grade !== undefined)         { updates.push("grade = ?");         values.push(normalizeGrade(grade)); }
+    if (assigned_for !== undefined)  { updates.push("assigned_for = ?");  values.push(assigned_for); }
     if (correct_option !== undefined) {
       const normalized = normalizeCorrectOption(correct_option);
       if (!normalized) return res.status(400).json({ error: "correct_option must be A, B, C, or D" });

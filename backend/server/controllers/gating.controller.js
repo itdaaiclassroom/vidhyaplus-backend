@@ -61,14 +61,14 @@ export async function getChapterGatingStatus(req, res) {
 
     const chapterIds = chapters.map((c) => c.id);
 
-    // Teacher assessment results (best attempt per chapter)
+    // Teacher assessment results (best attempt per chapter across all their classes)
     const [assessments] = await db.query(
       `SELECT chapter_id, MAX(passed) AS passed, MAX(percentage) AS best_score,
               MAX(attempt_number) AS attempts
        FROM teacher_chapter_assessments
-       WHERE teacher_id = ? AND class_id = ? AND chapter_id IN (?)
+       WHERE teacher_id = ? AND chapter_id IN (?)
        GROUP BY chapter_id`,
-      [teacher_id, class_id, chapterIds]
+      [teacher_id, chapterIds]
     );
     const assessmentMap = {};
     assessments.forEach((a) => {
@@ -227,7 +227,11 @@ export async function getAssessmentQuestions(req, res) {
     // Fall back to global config
     if (!questionCount) questionCount = parseInt(await getConfigValue(db, "assessment_question_count", "10")) || 10;
     if (!totalMarks) totalMarks = parseInt(await getConfigValue(db, "assessment_total_marks", "100")) || 100;
-    if (!passingMarks) passingMarks = parseInt(await getConfigValue(db, "assessment_passing_marks", "70")) || 70;
+    
+    const teacherPassPct = parseFloat(await getConfigValue(db, "teacher_pass_percentage", "70"));
+    if (!passingMarks) {
+      passingMarks = (teacherPassPct / 100) * totalMarks;
+    }
 
     // Get chapter info
     const [chapterRows] = await db.query(
@@ -359,7 +363,12 @@ export async function submitAssessment(req, res) {
     } catch (_) { /* table may not exist yet */ }
     // Fall back to global config
     if (!totalMarks) totalMarks = parseInt(await getConfigValue(db, "assessment_total_marks", "100")) || 100;
-    if (!passingMarks) passingMarks = parseInt(await getConfigValue(db, "assessment_passing_marks", "70")) || 70;
+    
+    // Prioritize teacher_pass_percentage (calculated against totalMarks) over the static assessment_passing_marks
+    const teacherPassPct = parseFloat(await getConfigValue(db, "teacher_pass_percentage", "70"));
+    if (!passingMarks) {
+      passingMarks = (teacherPassPct / 100) * totalMarks;
+    }
 
     // Grade the assessment
     let correct = 0;
@@ -373,6 +382,7 @@ export async function submitAssessment(req, res) {
       if (isCorrect) correct++;
       graded.push({
         questionId: ans.questionId,
+        questionText: q.questionText,
         selectedOption: ans.selectedOption,
         correctOption: q.correctOption,
         isCorrect,
@@ -399,9 +409,9 @@ export async function submitAssessment(req, res) {
     // Store result
     await db.query(
       `INSERT INTO teacher_chapter_assessments
-         (teacher_id, chapter_id, subject_id, grade_id, class_id, score, total, percentage, passed, attempt_number, assessment_source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [teacherId, chapterId, subjectId, gradeId, classId, correct, totalQuestions, percentage, passed ? 1 : 0, attemptNumber, source]
+         (teacher_id, chapter_id, subject_id, grade_id, class_id, score, total, passing_marks, percentage, passed, attempt_number, assessment_source, graded_summary)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [teacher_id, chapterId, subjectId, gradeId, classId, correct, totalQuestions, Math.round(passingMarks), percentage, passed ? 1 : 0, attemptNumber, source, JSON.stringify(graded)]
     );
 
     return res.json({
@@ -526,11 +536,27 @@ export async function updateGatingConfig(req, res) {
 
     for (const key of validKeys) {
       if (updates[key] !== undefined) {
-        await db.query(
-          "UPDATE gating_config SET config_value = ? WHERE config_key = ?",
-          [String(updates[key]), key]
-        );
-        updated++;
+        let value = String(updates[key]);
+        
+        // Enforce synchronization between teacher_pass_percentage and assessment_passing_marks
+        // Note: We treat them as the same value (percentage/score) as per user request.
+        if (key === "teacher_pass_percentage" || key === "assessment_passing_marks") {
+          await db.query(
+            "UPDATE gating_config SET config_value = ? WHERE config_key = 'teacher_pass_percentage'",
+            [value]
+          );
+          await db.query(
+            "UPDATE gating_config SET config_value = ? WHERE config_key = 'assessment_passing_marks'",
+            [value]
+          );
+          updated += 2;
+        } else {
+          await db.query(
+            "UPDATE gating_config SET config_value = ? WHERE config_key = ?",
+            [value, key]
+          );
+          updated++;
+        }
       }
     }
 

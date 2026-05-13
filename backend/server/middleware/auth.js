@@ -35,8 +35,8 @@ export function authorizeRole(roles) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const allowedRoles = (Array.isArray(roles) ? roles : [roles]).map(r => String(r).toLowerCase());
-    const userRole = String(req.user.role || "").toLowerCase();
+    const allowedRoles = (Array.isArray(roles) ? roles : [roles]).map(r => String(r).trim().toLowerCase());
+    const userRole = String(req.user.role || "").trim().toLowerCase();
     
     console.log(`[Auth] Path: ${req.path}, Required: ${allowedRoles}, Found: ${userRole}`);
 
@@ -47,7 +47,10 @@ export function authorizeRole(roles) {
     }
 
     console.warn(`[Auth] Forbidden! User role '${userRole}' does not match required roles: ${allowedRoles}`);
-    return res.status(403).json({ error: `Forbidden: Requires ${roles} role` });
+    return res.status(403).json({ 
+      error: `Forbidden: Requires ${roles} role`, 
+      found: userRole 
+    });
   };
 }
 

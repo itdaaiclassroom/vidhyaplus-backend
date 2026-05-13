@@ -435,3 +435,27 @@ export async function getTodayAttendance(req, res) {
     res.status(500).json({ error: "Failed to fetch today's attendance" });
   }
 }
+
+export async function getTeacherAssessments(req, res) {
+  const db = getPool();
+  const teacherId = Number(req.params.id);
+
+  if (!teacherId) return res.status(400).json({ error: "teacherId required" });
+
+  try {
+    const [rows] = await db.query(
+      `SELECT tca.*, c.chapter_name, s.subject_name
+       FROM teacher_chapter_assessments tca
+       LEFT JOIN chapters c ON c.id = tca.chapter_id
+       LEFT JOIN subjects s ON s.id = tca.subject_id
+       WHERE tca.teacher_id = ?
+       ORDER BY tca.attempt_number DESC, tca.id DESC`,
+      [teacherId]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/teachers/:id/assessments error:", err);
+    res.status(500).json({ error: "Failed to fetch teacher assessments" });
+  }
+}
