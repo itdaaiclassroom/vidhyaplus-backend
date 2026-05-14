@@ -96,18 +96,34 @@ export async function createAnnouncement(req, res) {
 
   if (!title || !message) return res.status(400).json({ error: "Title and message required" });
 
+  // Normalize: 'teachers', 'principals', or 'all'
+  const effectiveRole = target_role || 'all';
+
   try {
     const [result] = await db.query(
       "INSERT INTO announcements (sender_admin_id, title, message, target_role, target_school_id) VALUES (?, ?, ?, ?, ?)",
-      [adminId, title, message, target_role || 'teacher', target_school_id || null]
+      [adminId, title, message, effectiveRole, target_school_id || null]
     );
+
+    // Also insert into broadcast_messages for backward compat
+    try {
+      // Map target_role to target_audience enum: 'all', 'teachers', 'principals'
+      let broadcastAudience = 'all';
+      if (effectiveRole === 'teacher' || effectiveRole === 'teachers') broadcastAudience = 'teachers';
+      else if (effectiveRole === 'principal' || effectiveRole === 'principals') broadcastAudience = 'principals';
+
+      await db.query(
+        "INSERT INTO broadcast_messages (message, target_audience) VALUES (?, ?)",
+        [`${title}: ${message}`, broadcastAudience]
+      );
+    } catch (_) { /* broadcast_messages table may not exist yet */ }
 
     await auditLog(db, {
       ...actorFromReq(req),
       action:    "CREATE",
       entity:    "announcement",
       entity_id: String(result.insertId),
-      meta:      { title, target_role: target_role || "teacher", target_school_id: target_school_id || null },
+      meta:      { title, target_role: effectiveRole, target_school_id: target_school_id || null },
       req,
     });
 

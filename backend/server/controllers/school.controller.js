@@ -53,7 +53,7 @@ export async function createSchool(req, res) {
 export async function updateSchool(req, res) {
   const db = getPool();
   const id = Number(req.params.id);
-  const { name, code, district, mandal, sessions_completed, active_status } = req.body || {};
+  const { name, code, district, mandal, sessions_completed, active_status, principalName, principalEmail, principalPassword } = req.body || {};
   if (!id) return res.status(400).json({ error: "id required" });
   try {
     const updates = [];
@@ -64,13 +64,33 @@ export async function updateSchool(req, res) {
     if (mandal !== undefined) { updates.push("mandal = ?"); values.push(mandal != null ? String(mandal).trim() : null); }
     if (sessions_completed !== undefined) { updates.push("sessions_completed = ?"); values.push(Number(sessions_completed)); }
     if (active_status !== undefined) { updates.push("active_status = ?"); values.push(active_status ? 1 : 0); }
-    if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
-    values.push(id);
-    await db.query(`UPDATE schools SET ${updates.join(", ")} WHERE id = ?`, values);
+    
+    if (updates.length > 0) {
+      values.push(id);
+      await db.query(`UPDATE schools SET ${updates.join(", ")} WHERE id = ?`, values);
+    }
+
+    // Handle principal updates if provided
+    if (principalName || principalEmail || principalPassword) {
+      const pUpdates = [];
+      const pValues = [];
+      if (principalName) { pUpdates.push("full_name = ?"); pValues.push(String(principalName).trim()); }
+      if (principalEmail) { pUpdates.push("email = ?"); pValues.push(String(principalEmail).trim()); }
+      if (principalPassword && String(principalPassword).trim()) { pUpdates.push("password = ?"); pValues.push(String(principalPassword).trim()); }
+      
+      if (pUpdates.length > 0) {
+        pValues.push(id); // school_id
+        await db.query(`UPDATE teachers SET ${pUpdates.join(", ")} WHERE school_id = ? AND role = 'principal' LIMIT 1`, pValues);
+      }
+    }
+
     await auditLog(db, {
       ...actorFromReq(req),
       action: "UPDATE", entity: "school", entity_id: String(id),
-      meta: { changed_fields: Object.fromEntries(updates.map((u, i) => [u.replace(" = ?",""), values[i]])) },
+      meta: { 
+        school_updates: updates.length > 0 ? Object.fromEntries(updates.map((u, i) => [u.replace(" = ?",""), values[i]])) : {},
+        principal_updated: !!(principalName || principalEmail || principalPassword)
+      },
       req,
     });
     res.json({ id: String(id), updated: true });

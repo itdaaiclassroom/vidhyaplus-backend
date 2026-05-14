@@ -275,7 +275,8 @@ export async function bulkUploadSubjectQuestions(req, res) {
   const subjectId = Number(req.params.id);
   if (!subjectId) return res.status(400).json({ error: "subject id required" });
 
-  const { file } = req.body;
+  const { file, topic_id } = req.body;
+  const topicId = topic_id ? Number(topic_id) : null;
   if (!file) return res.status(400).json({ error: "file (base64) is required" });
 
   try {
@@ -364,6 +365,33 @@ export async function bulkUploadSubjectQuestions(req, res) {
       ]);
     }
 
+    const topicQuizRows = [];
+    if (topicId) {
+      for (const row of rows) {
+        const keys = Object.fromEntries(
+          Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), String(v ?? "").trim()])
+        );
+        const questionText = keys["question"] || keys["question text"] || "";
+        const optionA      = keys["option a"] || keys["a"] || "";
+        const optionB      = keys["option b"] || keys["b"] || "";
+        const optionC      = keys["option c"] || keys["c"] || "";
+        const optionD      = keys["option d"] || keys["d"] || "";
+        const rawCorrect   = keys["correct answer"] || keys["correct"] || keys["answer"] || "";
+        const explanation  = keys["explanation"] || keys["explain"] || null;
+        
+        const correctOption = normalizeCorrectOption(rawCorrect);
+        if (questionText && optionA && optionB && optionC && optionD && correctOption) {
+          topicQuizRows.push([
+            topicId,
+            questionText,
+            optionA, optionB, optionC, optionD,
+            correctOption,
+            explanation && explanation.length > 0 ? explanation : null
+          ]);
+        }
+      }
+    }
+
     // Bulk insert all valid rows in one query
     let insertedCount = 0;
     if (validRows.length > 0) {
@@ -376,6 +404,15 @@ export async function bulkUploadSubjectQuestions(req, res) {
         [validRows]
       );
       insertedCount = insertResult.affectedRows;
+    }
+
+    if (topicQuizRows.length > 0) {
+      await db.query(
+        `INSERT INTO topic_quiz_bank
+          (topic_id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation)
+         VALUES ?`,
+        [topicQuizRows]
+      );
     }
 
     // Audit log
@@ -418,8 +455,10 @@ export async function createSubjectQuestion(req, res) {
 
   const {
     question_text, option_a, option_b, option_c, option_d,
-    correct_option, explanation, chapter, grade, assigned_for
+    correct_option, explanation, chapter, grade, assigned_for, topic_id
   } = req.body;
+
+  const topicId = topic_id ? Number(topic_id) : null;
 
   if (!question_text || !option_a || !option_b || !option_c || !option_d) {
     return res.status(400).json({ error: "question_text and all four options are required" });
@@ -461,10 +500,54 @@ export async function createSubjectQuestion(req, res) {
       req,
     });
 
+    if (topicId) {
+      await db.query(
+        `INSERT INTO topic_quiz_bank
+          (topic_id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          topicId,
+          question_text,
+          option_a, option_b, option_c, option_d,
+          normalizedCorrect,
+          explanation || null
+        ]
+      );
+    }
+
     return res.status(201).json({ ok: true, id: String(result.insertId), subject_id: subjectId });
   } catch (err) {
     console.error("POST /api/subjects/:id/question-bank error:", err);
     return res.status(500).json({ error: String(err.message) });
+  }
+}
+
+export async function getSubjectTopics(req, res) {
+  const db = getPool();
+  const subjectId = Number(req.params.id);
+  const grade = req.query.grade ? Number(req.query.grade) : null;
+  
+  try {
+    let query = `
+      SELECT t.id, t.name, t.chapter_id, c.chapter_name 
+      FROM topics t
+      JOIN chapters c ON c.id = t.chapter_id
+      WHERE c.subject_id = ?
+    `;
+    const params = [subjectId];
+    
+    if (grade) {
+      query += " AND c.grade_id = ?";
+      params.push(grade);
+    }
+    
+    query += " ORDER BY c.chapter_name, t.id";
+    
+    const [rows] = await db.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/subjects/:id/topics error:", err);
+    res.status(500).json({ error: String(err.message) });
   }
 }
 

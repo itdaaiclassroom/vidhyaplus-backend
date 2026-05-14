@@ -411,7 +411,7 @@ export async function submitAssessment(req, res) {
       `INSERT INTO teacher_chapter_assessments
          (teacher_id, chapter_id, subject_id, grade_id, class_id, score, total, passing_marks, percentage, passed, attempt_number, assessment_source, graded_summary)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [teacher_id, chapterId, subjectId, gradeId, classId, correct, totalQuestions, Math.round(passingMarks), percentage, passed ? 1 : 0, attemptNumber, source, JSON.stringify(graded)]
+      [teacherId, chapterId, subjectId, gradeId, classId, correct, totalQuestions, Math.round(passingMarks), percentage, passed ? 1 : 0, attemptNumber, source, JSON.stringify(graded)]
     );
 
     return res.json({
@@ -538,25 +538,11 @@ export async function updateGatingConfig(req, res) {
       if (updates[key] !== undefined) {
         let value = String(updates[key]);
         
-        // Enforce synchronization between teacher_pass_percentage and assessment_passing_marks
-        // Note: We treat them as the same value (percentage/score) as per user request.
-        if (key === "teacher_pass_percentage" || key === "assessment_passing_marks") {
-          await db.query(
-            "UPDATE gating_config SET config_value = ? WHERE config_key = 'teacher_pass_percentage'",
-            [value]
-          );
-          await db.query(
-            "UPDATE gating_config SET config_value = ? WHERE config_key = 'assessment_passing_marks'",
-            [value]
-          );
-          updated += 2;
-        } else {
-          await db.query(
-            "UPDATE gating_config SET config_value = ? WHERE config_key = ?",
-            [value, key]
-          );
-          updated++;
-        }
+        await db.query(
+          "UPDATE gating_config SET config_value = ? WHERE config_key = ?",
+          [value, key]
+        );
+        updated++;
       }
     }
 
