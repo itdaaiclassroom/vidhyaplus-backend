@@ -459,3 +459,38 @@ export async function getTeacherAssessments(req, res) {
     res.status(500).json({ error: "Failed to fetch teacher assessments" });
   }
 }
+
+export async function getTeacherBroadcastMessages(req, res) {
+  const db = getPool();
+  try {
+    // Fetch messages intended for 'all' or 'teachers'
+    let messages = [];
+
+    try {
+      const [rows] = await db.query(`
+        SELECT id, message, target_audience, created_at FROM broadcast_messages 
+        WHERE target_audience = 'all' OR target_audience = 'teachers'
+        ORDER BY created_at DESC LIMIT 10
+      `);
+      messages = rows || [];
+    } catch (_) { /* table may not exist */ }
+
+    // Also query announcements table (admin sends here)
+    try {
+      const [annRows] = await db.query(`
+        SELECT id, title, message, target_role AS target_audience, created_at FROM announcements 
+        WHERE target_role = 'all' OR target_role = 'teacher' OR target_role = 'teachers'
+        ORDER BY created_at DESC LIMIT 10
+      `);
+      messages = [...messages, ...(annRows || [])];
+    } catch (_) { /* table may not exist */ }
+
+    // Sort combined list by date and limit
+    messages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    res.json(messages.slice(0, 20));
+  } catch (error) {
+    console.error("getTeacherBroadcastMessages error:", error);
+    res.status(500).json({ error: "Failed to fetch broadcast messages" });
+  }
+}
+

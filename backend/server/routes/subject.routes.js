@@ -15,6 +15,7 @@ import {
   bulkUploadSubjectQuestions,
   updateSubjectQuestion,
   deleteSubjectQuestion,
+  getSubjectTopics,
 } from "../controllers/subject.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -80,6 +81,13 @@ router.delete(
 );
 
 // ── Question Bank (Dynamic Routes) ───────────────────────────────────────
+
+// Get topics for a subject
+router.get(
+  "/:id/topics",
+  authenticateJWT,
+  getSubjectTopics
+);
 
 // Per-subject question list (filterable by chapter & grade)
 router.get(
