@@ -284,10 +284,6 @@ function normalizeLevel(raw) {
 ──────────────────────────────────────────────────────────────── */
 export async function bulkUploadQuestions(req, res) {
   const db = getPool();
-  const { file } = req.body;
-  const subjectId = Number(req.params.id);
-  if (!subjectId) return res.status(400).json({ error: "subject id required" });
-
   const { file, topic_id } = req.body;
   const topicId = topic_id ? Number(topic_id) : null;
   if (!file) return res.status(400).json({ error: "file (base64) is required" });
@@ -481,8 +477,8 @@ export async function createSubjectQuestion(req, res) {
 
   const {
     question_text, option_a, option_b, option_c, option_d,
-    correct_option, explanation, chapter, grade, topic_name, level
-    correct_option, explanation, chapter, grade, assigned_for, topic_id
+    correct_option, explanation, chapter, grade, topic_name, level,
+    assigned_for, topic_id
   } = req.body;
 
   const topicId = topic_id ? Number(topic_id) : null;
@@ -504,10 +500,8 @@ export async function createSubjectQuestion(req, res) {
       `INSERT INTO subject_quiz_bank
         (subject_id, chapter, grade, topic_name, level, question_text,
          option_a, option_b, option_c, option_d,
-         correct_option, explanation, uploaded_by, uploaded_by_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
          correct_option, explanation, assigned_for, uploaded_by, uploaded_by_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         subjectId,
         chapter || null,
@@ -737,8 +731,8 @@ export async function updateSubjectQuestion(req, res) {
 
   const {
     question_text, option_a, option_b, option_c, option_d,
-    correct_option, explanation, chapter, grade, topic_name, level
-    correct_option, explanation, chapter, grade, assigned_for
+    correct_option, explanation, chapter, grade, topic_name, level,
+    assigned_for
   } = req.body;
 
   try {
