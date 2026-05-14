@@ -12,7 +12,7 @@ import {
   getQuestionBank,
   getSubjectQuestionBank,
   createSubjectQuestion,
-  bulkUploadSubjectQuestions,
+  bulkUploadQuestions,
   updateSubjectQuestion,
   deleteSubjectQuestion,
 } from "../controllers/subject.controller.js";
@@ -29,6 +29,14 @@ router.get(
   authenticateJWT,
   authorizeRole(["admin", "principal", "teacher", "material_management"]),
   getQuestionBank
+);
+
+// Global bulk upload (.xlsx / .xls / .csv)
+router.post(
+  "/question-bank/bulk",
+  authenticateJWT,
+  authorizeRole(["admin", "principal", "material_management"]),
+  bulkUploadQuestions
 );
 
 // Edit a single question
@@ -89,13 +97,6 @@ router.get(
   getSubjectQuestionBank
 );
 
-// Bulk upload (.xlsx / .xls / .csv)
-router.post(
-  "/:id/question-bank/bulk",
-  authenticateJWT,
-  authorizeRole(["admin", "principal", "material_management"]),
-  bulkUploadSubjectQuestions
-);
 
 // Single question create
 router.post(
