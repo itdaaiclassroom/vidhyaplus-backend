@@ -265,13 +265,26 @@ function normalizeGrade(raw) {
   return num >= 6 && num <= 10 ? num : null;
 }
 
+/**
+ * Normalize a level value to Easy, Medium, Hard.
+ */
+function normalizeLevel(raw) {
+  if (!raw) return null;
+  const val = String(raw).trim().toLowerCase();
+  if (val === 'easy') return 'Easy';
+  if (val === 'medium') return 'Medium';
+  if (val === 'hard') return 'Hard';
+  return null;
+}
+
 /* ──────────────────────────────────────────────────────────────
-   1. BULK UPLOAD
-   POST /api/subjects/:id/question-bank/bulk
+   1. BULK UPLOAD (GLOBAL MASTER UPLOAD)
+   POST /api/subjects/question-bank/bulk
    Body: { file: "<base64 string of .xlsx / .xls / .csv>" }
 ──────────────────────────────────────────────────────────────── */
-export async function bulkUploadSubjectQuestions(req, res) {
+export async function bulkUploadQuestions(req, res) {
   const db = getPool();
+  const { file } = req.body;
   const subjectId = Number(req.params.id);
   if (!subjectId) return res.status(400).json({ error: "subject id required" });
 
@@ -280,19 +293,19 @@ export async function bulkUploadSubjectQuestions(req, res) {
   if (!file) return res.status(400).json({ error: "file (base64) is required" });
 
   try {
-    // Validate subject exists
-    const [subjRows] = await db.query("SELECT id, subject_name FROM subjects WHERE id = ? LIMIT 1", [subjectId]);
-    if (!subjRows || subjRows.length === 0) {
-      return res.status(404).json({ error: "Subject not found" });
-    }
-    const subjectName = subjRows[0].subject_name;
+    // 1. Fetch all subjects to build a map: { "physics": 1, "maths": 2 }
+    const [subjRows] = await db.query("SELECT id, subject_name FROM subjects");
+    const subjectMap = {};
+    subjRows.forEach(s => {
+      subjectMap[s.subject_name.trim().toLowerCase()] = s.id;
+    });
 
-    // Decode base64 → Buffer (strip data URI prefix if present)
+    // 2. Decode base64 → Buffer
     const base64Data = file.replace(/^data:[^;]+;base64,/, "");
     const buffer = Buffer.from(base64Data, "base64");
     if (buffer.length === 0) return res.status(400).json({ error: "file content is empty" });
 
-    // Parse spreadsheet
+    // 3. Parse spreadsheet
     let rows;
     try {
       rows = parseSpreadsheetBuffer(buffer);
@@ -315,11 +328,11 @@ export async function bulkUploadSubjectQuestions(req, res) {
       const row     = rows[i];
       const rowNum  = i + 2; // +2 because row 1 is the header in Excel
 
-      // Map column headers (case-insensitive, trim whitespace)
       const keys = Object.fromEntries(
         Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), String(v ?? "").trim()])
       );
 
+      const rawSubject    = keys["subject"] || keys["subject name"] || "";
       const questionText  = keys["question"] || keys["question text"] || "";
       const optionA       = keys["option a"] || keys["a"] || "";
       const optionB       = keys["option b"] || keys["b"] || "";
@@ -329,9 +342,22 @@ export async function bulkUploadSubjectQuestions(req, res) {
       const explanation   = keys["explanation"] || keys["explain"] || null;
       const chapter       = keys["chapter"] || null;
       const rawGrade      = keys["grade"] || keys["class"] || null;
+      const topicName     = keys["topic name"] || keys["topic"] || null;
+      const rawLevel      = keys["level"] || keys["difficulty"] || null;
+
+      // Validate Subject
+      if (!rawSubject) {
+        errorRows.push({ row: rowNum, reason: "Subject is missing" });
+        continue;
+      }
+      const subjectId = subjectMap[rawSubject.toLowerCase()];
+      if (!subjectId) {
+        errorRows.push({ row: rowNum, reason: `Subject '${rawSubject}' not found in database.` });
+        continue;
+      }
       const assignedFor   = keys["assigned for"] || keys["assigned"] || "both";
 
-      // --- Validate required fields ---
+      // Validate required fields
       if (!questionText) {
         errorRows.push({ row: rowNum, reason: "Question text is missing" });
         continue;
@@ -347,11 +373,14 @@ export async function bulkUploadSubjectQuestions(req, res) {
       }
 
       const grade = normalizeGrade(rawGrade);
+      const level = normalizeLevel(rawLevel);
 
       validRows.push([
         subjectId,
         chapter && chapter.length > 0 ? chapter : null,
         grade,
+        topicName && topicName.length > 0 ? topicName : null,
+        level,
         questionText,
         optionA,
         optionB,
@@ -397,7 +426,7 @@ export async function bulkUploadSubjectQuestions(req, res) {
     if (validRows.length > 0) {
       const [insertResult] = await db.query(
         `INSERT INTO subject_quiz_bank
-          (subject_id, chapter, grade, question_text,
+          (subject_id, chapter, grade, topic_name, level, question_text,
            option_a, option_b, option_c, option_d,
            correct_option, explanation, assigned_for, uploaded_by, uploaded_by_id)
          VALUES ?`,
@@ -419,11 +448,9 @@ export async function bulkUploadSubjectQuestions(req, res) {
     await auditLog(db, {
       ...actor,
       action:    "CREATE",
-      entity:    "question_bank_bulk",
-      entity_id: String(subjectId),
+      entity:    "question_bank_bulk_global",
+      entity_id: "global",
       meta: {
-        subject_id:   subjectId,
-        subject_name: subjectName,
         total_rows:   rows.length,
         uploaded:     insertedCount,
         failed:       errorRows.length,
@@ -433,13 +460,12 @@ export async function bulkUploadSubjectQuestions(req, res) {
 
     return res.status(201).json({
       ok:       true,
-      subject:  subjectName,
       uploaded: insertedCount,
       failed:   errorRows.length,
       errors:   errorRows,
     });
   } catch (err) {
-    console.error("POST /api/subjects/:id/question-bank/bulk error:", err);
+    console.error("POST /api/subjects/question-bank/bulk error:", err);
     return res.status(500).json({ error: String(err.message) });
   }
 }
@@ -455,6 +481,7 @@ export async function createSubjectQuestion(req, res) {
 
   const {
     question_text, option_a, option_b, option_c, option_d,
+    correct_option, explanation, chapter, grade, topic_name, level
     correct_option, explanation, chapter, grade, assigned_for, topic_id
   } = req.body;
 
@@ -475,14 +502,18 @@ export async function createSubjectQuestion(req, res) {
     const actor = actorFromReq(req);
     const [result] = await db.query(
       `INSERT INTO subject_quiz_bank
-        (subject_id, chapter, grade, question_text,
+        (subject_id, chapter, grade, topic_name, level, question_text,
          option_a, option_b, option_c, option_d,
+         correct_option, explanation, uploaded_by, uploaded_by_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
          correct_option, explanation, assigned_for, uploaded_by, uploaded_by_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         subjectId,
         chapter || null,
         normalizeGrade(grade),
+        topic_name || null,
+        normalizeLevel(level),
         question_text,
         option_a, option_b, option_c, option_d,
         normalizedCorrect,
@@ -576,6 +607,14 @@ export async function getSubjectQuestionBank(req, res) {
     conditions.push("sqb.chapter LIKE ?");
     params.push(`%${req.query.chapter}%`);
   }
+  if (req.query.topic_name) {
+    conditions.push("sqb.topic_name LIKE ?");
+    params.push(`%${req.query.topic_name}%`);
+  }
+  if (req.query.level) {
+    const l = normalizeLevel(req.query.level);
+    if (l) { conditions.push("sqb.level = ?"); params.push(l); }
+  }
 
   const where = `WHERE ${conditions.join(" AND ")}`;
 
@@ -584,7 +623,7 @@ export async function getSubjectQuestionBank(req, res) {
       `SELECT COUNT(*) AS total FROM subject_quiz_bank sqb ${where}`, params
     );
     const [rows] = await db.query(
-      `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade,
+      `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade, sqb.topic_name, sqb.level,
               sqb.question_text, sqb.option_a, sqb.option_b, sqb.option_c, sqb.option_d,
               sqb.correct_option, sqb.explanation, sqb.assigned_for, sqb.uploaded_by, sqb.created_at
        FROM subject_quiz_bank sqb
@@ -603,6 +642,8 @@ export async function getSubjectQuestionBank(req, res) {
         subject_id: subjectId,
         grade: req.query.grade || null,
         chapter: req.query.chapter || null,
+        topic_name: req.query.topic_name || null,
+        level: req.query.level || null,
       },
       data: rows,
     });
@@ -639,6 +680,14 @@ export async function getQuestionBank(req, res) {
     conditions.push("sqb.chapter LIKE ?");
     params.push(`%${req.query.chapter}%`);
   }
+  if (req.query.topic_name) {
+    conditions.push("sqb.topic_name LIKE ?");
+    params.push(`%${req.query.topic_name}%`);
+  }
+  if (req.query.level) {
+    const l = normalizeLevel(req.query.level);
+    if (l) { conditions.push("sqb.level = ?"); params.push(l); }
+  }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
@@ -647,7 +696,7 @@ export async function getQuestionBank(req, res) {
       `SELECT COUNT(*) AS total FROM subject_quiz_bank sqb ${where}`, params
     );
     const [rows] = await db.query(
-      `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade,
+      `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade, sqb.topic_name, sqb.level,
               sqb.question_text, sqb.option_a, sqb.option_b, sqb.option_c, sqb.option_d,
               sqb.correct_option, sqb.explanation, sqb.assigned_for, sqb.uploaded_by, sqb.created_at
        FROM subject_quiz_bank sqb
@@ -666,6 +715,8 @@ export async function getQuestionBank(req, res) {
         subject_id: req.query.subject_id || null,
         grade: req.query.grade || null,
         chapter: req.query.chapter || null,
+        topic_name: req.query.topic_name || null,
+        level: req.query.level || null,
       },
       data: rows,
     });
@@ -686,6 +737,7 @@ export async function updateSubjectQuestion(req, res) {
 
   const {
     question_text, option_a, option_b, option_c, option_d,
+    correct_option, explanation, chapter, grade, topic_name, level
     correct_option, explanation, chapter, grade, assigned_for
   } = req.body;
 
@@ -700,7 +752,9 @@ export async function updateSubjectQuestion(req, res) {
     if (option_d !== undefined)      { updates.push("option_d = ?");      values.push(String(option_d).trim()); }
     if (explanation !== undefined)   { updates.push("explanation = ?");   values.push(explanation || null); }
     if (chapter !== undefined)       { updates.push("chapter = ?");       values.push(chapter || null); }
+    if (topic_name !== undefined)    { updates.push("topic_name = ?");    values.push(topic_name || null); }
     if (grade !== undefined)         { updates.push("grade = ?");         values.push(normalizeGrade(grade)); }
+    if (level !== undefined)         { updates.push("level = ?");         values.push(normalizeLevel(level)); }
     if (assigned_for !== undefined)  { updates.push("assigned_for = ?");  values.push(assigned_for); }
     if (correct_option !== undefined) {
       const normalized = normalizeCorrectOption(correct_option);
