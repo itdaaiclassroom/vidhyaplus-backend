@@ -285,6 +285,11 @@ function normalizeLevel(raw) {
 export async function bulkUploadQuestions(req, res) {
   const db = getPool();
   const { file } = req.body;
+  const subjectId = Number(req.params.id);
+  if (!subjectId) return res.status(400).json({ error: "subject id required" });
+
+  const { file, topic_id } = req.body;
+  const topicId = topic_id ? Number(topic_id) : null;
   if (!file) return res.status(400).json({ error: "file (base64) is required" });
 
   try {
@@ -350,6 +355,7 @@ export async function bulkUploadQuestions(req, res) {
         errorRows.push({ row: rowNum, reason: `Subject '${rawSubject}' not found in database.` });
         continue;
       }
+      const assignedFor   = keys["assigned for"] || keys["assigned"] || "both";
 
       // Validate required fields
       if (!questionText) {
@@ -382,9 +388,37 @@ export async function bulkUploadQuestions(req, res) {
         optionD,
         correctOption,
         explanation && explanation.length > 0 ? explanation : null,
+        assignedFor,
         uploadedBy,
         uploadedById,
       ]);
+    }
+
+    const topicQuizRows = [];
+    if (topicId) {
+      for (const row of rows) {
+        const keys = Object.fromEntries(
+          Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), String(v ?? "").trim()])
+        );
+        const questionText = keys["question"] || keys["question text"] || "";
+        const optionA      = keys["option a"] || keys["a"] || "";
+        const optionB      = keys["option b"] || keys["b"] || "";
+        const optionC      = keys["option c"] || keys["c"] || "";
+        const optionD      = keys["option d"] || keys["d"] || "";
+        const rawCorrect   = keys["correct answer"] || keys["correct"] || keys["answer"] || "";
+        const explanation  = keys["explanation"] || keys["explain"] || null;
+        
+        const correctOption = normalizeCorrectOption(rawCorrect);
+        if (questionText && optionA && optionB && optionC && optionD && correctOption) {
+          topicQuizRows.push([
+            topicId,
+            questionText,
+            optionA, optionB, optionC, optionD,
+            correctOption,
+            explanation && explanation.length > 0 ? explanation : null
+          ]);
+        }
+      }
     }
 
     // Bulk insert all valid rows in one query
@@ -394,11 +428,20 @@ export async function bulkUploadQuestions(req, res) {
         `INSERT INTO subject_quiz_bank
           (subject_id, chapter, grade, topic_name, level, question_text,
            option_a, option_b, option_c, option_d,
-           correct_option, explanation, uploaded_by, uploaded_by_id)
+           correct_option, explanation, assigned_for, uploaded_by, uploaded_by_id)
          VALUES ?`,
         [validRows]
       );
       insertedCount = insertResult.affectedRows;
+    }
+
+    if (topicQuizRows.length > 0) {
+      await db.query(
+        `INSERT INTO topic_quiz_bank
+          (topic_id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation)
+         VALUES ?`,
+        [topicQuizRows]
+      );
     }
 
     // Audit log
@@ -439,7 +482,10 @@ export async function createSubjectQuestion(req, res) {
   const {
     question_text, option_a, option_b, option_c, option_d,
     correct_option, explanation, chapter, grade, topic_name, level
+    correct_option, explanation, chapter, grade, assigned_for, topic_id
   } = req.body;
+
+  const topicId = topic_id ? Number(topic_id) : null;
 
   if (!question_text || !option_a || !option_b || !option_c || !option_d) {
     return res.status(400).json({ error: "question_text and all four options are required" });
@@ -460,6 +506,8 @@ export async function createSubjectQuestion(req, res) {
          option_a, option_b, option_c, option_d,
          correct_option, explanation, uploaded_by, uploaded_by_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         correct_option, explanation, assigned_for, uploaded_by, uploaded_by_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         subjectId,
         chapter || null,
@@ -470,6 +518,7 @@ export async function createSubjectQuestion(req, res) {
         option_a, option_b, option_c, option_d,
         normalizedCorrect,
         explanation || null,
+        assigned_for || 'both',
         actor.actor_name,
         actor.actor_id,
       ]
@@ -482,10 +531,54 @@ export async function createSubjectQuestion(req, res) {
       req,
     });
 
+    if (topicId) {
+      await db.query(
+        `INSERT INTO topic_quiz_bank
+          (topic_id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          topicId,
+          question_text,
+          option_a, option_b, option_c, option_d,
+          normalizedCorrect,
+          explanation || null
+        ]
+      );
+    }
+
     return res.status(201).json({ ok: true, id: String(result.insertId), subject_id: subjectId });
   } catch (err) {
     console.error("POST /api/subjects/:id/question-bank error:", err);
     return res.status(500).json({ error: String(err.message) });
+  }
+}
+
+export async function getSubjectTopics(req, res) {
+  const db = getPool();
+  const subjectId = Number(req.params.id);
+  const grade = req.query.grade ? Number(req.query.grade) : null;
+  
+  try {
+    let query = `
+      SELECT t.id, t.name, t.chapter_id, c.chapter_name 
+      FROM topics t
+      JOIN chapters c ON c.id = t.chapter_id
+      WHERE c.subject_id = ?
+    `;
+    const params = [subjectId];
+    
+    if (grade) {
+      query += " AND c.grade_id = ?";
+      params.push(grade);
+    }
+    
+    query += " ORDER BY c.chapter_name, t.id";
+    
+    const [rows] = await db.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /api/subjects/:id/topics error:", err);
+    res.status(500).json({ error: String(err.message) });
   }
 }
 
@@ -532,7 +625,7 @@ export async function getSubjectQuestionBank(req, res) {
     const [rows] = await db.query(
       `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade, sqb.topic_name, sqb.level,
               sqb.question_text, sqb.option_a, sqb.option_b, sqb.option_c, sqb.option_d,
-              sqb.correct_option, sqb.explanation, sqb.uploaded_by, sqb.created_at
+              sqb.correct_option, sqb.explanation, sqb.assigned_for, sqb.uploaded_by, sqb.created_at
        FROM subject_quiz_bank sqb
        JOIN subjects s ON s.id = sqb.subject_id
        ${where}
@@ -605,7 +698,7 @@ export async function getQuestionBank(req, res) {
     const [rows] = await db.query(
       `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade, sqb.topic_name, sqb.level,
               sqb.question_text, sqb.option_a, sqb.option_b, sqb.option_c, sqb.option_d,
-              sqb.correct_option, sqb.explanation, sqb.uploaded_by, sqb.created_at
+              sqb.correct_option, sqb.explanation, sqb.assigned_for, sqb.uploaded_by, sqb.created_at
        FROM subject_quiz_bank sqb
        JOIN subjects s ON s.id = sqb.subject_id
        ${where}
@@ -645,6 +738,7 @@ export async function updateSubjectQuestion(req, res) {
   const {
     question_text, option_a, option_b, option_c, option_d,
     correct_option, explanation, chapter, grade, topic_name, level
+    correct_option, explanation, chapter, grade, assigned_for
   } = req.body;
 
   try {
@@ -661,6 +755,7 @@ export async function updateSubjectQuestion(req, res) {
     if (topic_name !== undefined)    { updates.push("topic_name = ?");    values.push(topic_name || null); }
     if (grade !== undefined)         { updates.push("grade = ?");         values.push(normalizeGrade(grade)); }
     if (level !== undefined)         { updates.push("level = ?");         values.push(normalizeLevel(level)); }
+    if (assigned_for !== undefined)  { updates.push("assigned_for = ?");  values.push(assigned_for); }
     if (correct_option !== undefined) {
       const normalized = normalizeCorrectOption(correct_option);
       if (!normalized) return res.status(400).json({ error: "correct_option must be A, B, C, or D" });

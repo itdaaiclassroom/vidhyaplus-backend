@@ -805,3 +805,61 @@ export async function getPrincipalOverview(req, res) {
     message: "Overview endpoints are /teacher-attendance-summary and /student-attendance-summary"
   });
 }
+
+export async function getSchoolRanking(req, res) {
+  try {
+    const schoolId = req.user.schoolId || req.user.school_id;
+    // Dummy ranking logic: count total students and rank by that
+    const [schools] = await db.query(`
+      SELECT s.id, s.name, COUNT(st.id) as student_count
+      FROM schools s
+      LEFT JOIN users st ON st.school_id = s.id AND st.role = 'student'
+      GROUP BY s.id
+      ORDER BY student_count DESC
+    `);
+    
+    let rank = schools.findIndex(s => s.id === schoolId) + 1;
+    if (rank === 0) rank = 1; // Default if not found
+    
+    res.json({ rank, total: schools.length || 1 });
+  } catch (error) {
+    console.error("getSchoolRanking error:", error);
+    res.status(500).json({ error: "Failed to fetch school ranking" });
+  }
+}
+
+export async function getBroadcastMessages(req, res) {
+  const db = getPool();
+  try {
+    const role = req.user.role; // e.g. 'principal' or 'teacher'
+    const audienceKey = role === 'principal' ? 'principals' : 'teachers';
+
+    // Query broadcast_messages table
+    let messages = [];
+    try {
+      const [rows] = await db.query(`
+        SELECT id, message, target_audience, created_at FROM broadcast_messages 
+        WHERE target_audience = 'all' OR target_audience = ?
+        ORDER BY created_at DESC LIMIT 10
+      `, [audienceKey]);
+      messages = rows || [];
+    } catch (_) { /* table may not exist */ }
+
+    // Also query announcements table (admin sends here)
+    try {
+      const [annRows] = await db.query(`
+        SELECT id, title, message, target_role AS target_audience, created_at FROM announcements 
+        WHERE target_role = 'all' OR target_role = ? OR target_role = 'teacher'
+        ORDER BY created_at DESC LIMIT 10
+      `, [role]);
+      messages = [...messages, ...(annRows || [])];
+    } catch (_) { /* table may not exist */ }
+
+    // Sort combined list by date and limit
+    messages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    res.json(messages.slice(0, 20));
+  } catch (error) {
+    console.error("getBroadcastMessages error:", error);
+    res.status(500).json({ error: "Failed to fetch broadcast messages" });
+  }
+}
