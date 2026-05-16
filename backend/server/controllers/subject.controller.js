@@ -169,7 +169,45 @@ export async function uploadSubjectMaterial(req, res) {
     await assetStorage.saveUploadBuffer(safeKey, buffer, contentType);
     const publicUrl = assetStorage.getPublicUrl(safeKey);
 
-    // Save record to DB
+    // --- REPLACEMENT LOGIC: Check for existing material with same title/grade ---
+    const [existing] = await db.query(
+      "SELECT id, file_path FROM subject_materials WHERE subject_id = ? AND grade_id = ? AND title = ? LIMIT 1",
+      [id, req.body.grade_id ? Number(req.body.grade_id) : null, title]
+    );
+
+    if (existing && existing.length > 0) {
+      const oldUrl = existing[0].file_path;
+      if (oldUrl) {
+        let oldKey = oldUrl;
+        if (oldUrl.startsWith('http')) {
+          const parts = oldUrl.split('/');
+          oldKey = parts.slice(3).join('/');
+        }
+        try {
+          await assetStorage.deleteUpload(oldKey);
+          console.log("[materials] Deleted old file before replacement:", oldKey);
+        } catch (e) {
+          console.warn("[materials] Could not delete old file:", e.message);
+        }
+      }
+
+      // Update existing record
+      await db.query(
+        "UPDATE subject_materials SET file_path = ?, uploaded_by = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [publicUrl, "admin", existing[0].id]
+      );
+
+      return res.json({
+        id: String(existing[0].id),
+        subject_id: id,
+        title,
+        file_path: publicUrl,
+        uploaded_by: "admin",
+        replaced: true
+      });
+    }
+
+    // Save record to DB (New insert)
     const [result] = await db.query(
       "INSERT INTO subject_materials (subject_id, grade_id, title, file_path, uploaded_by) VALUES (?, ?, ?, ?, ?)",
       [id, req.body.grade_id ? Number(req.body.grade_id) : null, title, publicUrl, "admin"]

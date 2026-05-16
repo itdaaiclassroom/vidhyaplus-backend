@@ -3554,7 +3554,17 @@ app.put("/api/chapters/:id/textbook", async (req, res) => {
   if (!chapterId) return res.status(400).json({ error: "chapter id required" });
   const { path: pathOnly, file: base64File, filename } = req.body || {};
   try {
-    let relativePath = pathOnly && String(pathOnly).trim();
+    // --- DELETE OLD TEXTBOOK FROM R2 BEFORE SAVING NEW ONE ---
+    try {
+      const [oldRows] = await db.query("SELECT pdf_url FROM chapter_textual_materials WHERE chapter_id = ?", [chapterId]);
+      if (oldRows && oldRows[0] && oldRows[0].pdf_url) {
+        await assetStorage.deleteUpload(oldRows[0].pdf_url);
+        console.log("[textbook] Deleted old textbook from storage before replacement:", oldRows[0].pdf_url);
+      }
+    } catch (e) {
+      console.warn("[textbook] Old file deletion failed/skipped:", e.message);
+    }
+
     if (base64File && typeof base64File === "string") {
       const ext = filename && filename.toLowerCase().endsWith(".pdf") ? ".pdf" : ".pdf";
       const safeName = `chapter_${chapterId}${ext}`;
@@ -3688,7 +3698,17 @@ app.put("/api/topics/:id/ppt", async (req, res) => {
   if (!topicId) return res.status(400).json({ error: "topic id required" });
   const { path: pathOnly, file: base64File, filename } = req.body || {};
   try {
-    let relativePath = pathOnly && String(pathOnly).trim();
+    // --- DELETE OLD PPT FROM R2 BEFORE SAVING NEW ONE ---
+    try {
+      const [oldRows] = await db.query("SELECT topic_ppt_path FROM topics WHERE id = ?", [topicId]);
+      if (oldRows && oldRows[0] && oldRows[0].topic_ppt_path) {
+        await assetStorage.deleteUpload(oldRows[0].topic_ppt_path);
+        console.log("[ppt] Deleted old PPT from storage before replacement:", oldRows[0].topic_ppt_path);
+      }
+    } catch (e) {
+      console.warn("[ppt] Old file deletion failed/skipped:", e.message);
+    }
+
     if (base64File && typeof base64File === "string") {
       const ext = filename && /\.(pptx?|pdf)$/i.test(filename) ? path.extname(filename).toLowerCase() : ".pptx";
       const safeName = `topic_${topicId}${ext}`;
