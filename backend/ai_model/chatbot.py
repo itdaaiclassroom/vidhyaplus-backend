@@ -680,8 +680,18 @@ def _rag_quiz_fallback(topic: str, subject: str, grade: int, count: int, chunks:
 # API Route: POST /generate_quiz
 # ---------------------------------------------------------------------------
 
+class GenerateQuizBody(BaseModel):
+    topic_name: str
+    subject: str = ""
+    grade: int = 10
+    count: int = 10          # number of questions (1–20)
+    role: str = "student"    # "teacher" → Hard only | "student" → Mixed
+    db_api_url: str = ""     # Node.js base URL e.g. http://localhost:5000
+    service_key: str = ""    # Secret key for service-to-service auth
+
 @router.post("/generate_quiz", summary="Generate MCQ quiz for a topic")
 def generate_quiz(body: GenerateQuizBody):
+
     """
     Hybrid AI-DB Quiz Generator.
 
