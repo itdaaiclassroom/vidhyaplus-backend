@@ -2200,7 +2200,7 @@ app.post("/api/live-quiz", async (req, res) => {
     const classRow = await db.query("SELECT grade_id FROM sections WHERE id = ?", [Number(classId)]).then(([r]) => r && r[0]).catch(() => null);
     const grade = classRow ? classRow.grade_id : 10;
 
-    const questions = await fetchQuizQuestions(topicName, subjectName, grade, numQuestionsToCreate, { topicId, chapterId, subjectId, isTeacherContext: true });
+    const questions = await fetchQuizQuestions(topicName, subjectName, grade, numQuestionsToCreate, { topicId, chapterId, subjectId, isTeacherContext: false });
     const fallbackQuestions = Array.from({ length: numQuestionsToCreate }).map((_, i) => ({
       question_text: `Question ${i + 1}: ${String(topicName)} (generated fallback)`,
       option_a: "A",
