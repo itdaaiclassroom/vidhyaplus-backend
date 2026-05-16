@@ -27,12 +27,6 @@ from pydantic import BaseModel
 router = APIRouter(tags=["chatbot"])
 
 # ---------------------------------------------------------------------------
-# Router
-# ---------------------------------------------------------------------------
-
-router = APIRouter(tags=["chatbot"])
-
-# ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
@@ -690,41 +684,87 @@ class GenerateQuizBody(BaseModel):
     topic_name: str
     subject: str = ""
     grade: int = 10
-    count: int = 10  # number of questions (1–20)
-
+    count: int = 10          # number of questions (1–20)
+    role: str = "student"    # "teacher" → Hard only | "student" → Mixed
+    db_api_url: str = ""     # Node.js base URL e.g. http://localhost:5000
+    service_key: str = ""    # Secret key for service-to-service auth
 
 @router.post("/generate_quiz", summary="Generate MCQ quiz for a topic")
 def generate_quiz(body: GenerateQuizBody):
-    """
-    Generate N multiple-choice questions using RAG context + Ollama.
 
-    **LLM Priority:**
-    1. Ollama (mistral) — best quality, formatted MCQs
-    2. RAG template-based — extracts real facts from indexed PDF chunks (no LLM needed)
-    3. HTTP 422 — if no documents are indexed at all
+    """
+    Hybrid AI-DB Quiz Generator.
+
+    **Priority:**
+    1. Question Bank DB (instant, ~50ms) — fetches from Node.js API first
+    2. Ollama (mistral) — best quality AI-generated MCQs to fill the gap
+    3. RAG template-based — extracts real facts from indexed PDF chunks (no LLM needed)
+    4. HTTP 422 — if DB is empty AND no documents are indexed
+
+    **Role Logic:**
+    - role=teacher -> only Hard level questions from DB
+    - role=student -> mixed Easy/Medium/Hard questions from DB
     """
     from fastapi import HTTPException
+    import os
 
     topic   = (body.topic_name or "").strip() or "General"
     subject = (body.subject    or "").strip() or "General"
     grade   = body.grade or 10
     count   = max(1, min(body.count, 20))
+    role    = (body.role or "student").strip().lower()
 
-    print(f"[quiz] Request: topic={topic!r} subject={subject!r} grade={grade} count={count}")
+    # Resolve DB API URL — body takes precedence, then env, then localhost default
+    db_base = (
+        body.db_api_url.strip()
+        or os.environ.get("NODE_API_URL", "").strip()
+        or "http://localhost:5000"
+    ).rstrip("/")
+    service_key = (
+        body.service_key.strip()
+        or os.environ.get("AI_SERVICE_KEY", "").strip()
+    )
 
+    print(f"[quiz] Request: topic={topic!r} subject={subject!r} grade={grade} count={count} role={role!r}")
+
+    # ── Step 1: Fetch from Question Bank DB (Fastest path) ────────────────
+    db_questions = _fetch_from_question_bank(topic, subject, grade, count, role, db_base, service_key)
+    print(f"[quiz] DB returned {len(db_questions)} questions.")
+
+    if len(db_questions) >= count:
+        # DB has everything we need — return instantly!
+        print(f"[quiz] ✅ DB-ONLY path: returning {count} questions instantly.")
+        return {
+            "questions": db_questions[:count],
+            "model_used": "question_bank_db",
+            "source": "database",
+        }
+
+    # DB has some but not enough — AI will fill the gap
+    ai_needed = count - len(db_questions)
+    print(f"[quiz] DB partial ({len(db_questions)}/{count}): need {ai_needed} more from AI.")
+
+    # ── Step 2: RAG retrieval for AI context ──────────────────────────────
     query           = f"{subject} class {grade} {topic}"
-    retrieved_pairs = document_registry.retrieve_chunks(query, k=max(count * 2, 10))
+    retrieved_pairs = document_registry.retrieve_chunks(query, k=max(ai_needed * 2, 10))
     chunks          = [chunk for chunk, _ in retrieved_pairs]
     context         = "\n\n".join(chunks[:5])[:2500] if chunks else ""
     print(f"[quiz] RAG: {len(chunks)} chunks retrieved for query={query!r}")
 
-    # ── 1. Ollama (best quality) ───────────────────────────────────────────
+    # ── Step 3: Ollama (best quality) ─────────────────────────────────────
     _ollama_up = ollama_available()
-    print(f"[quiz] ollama_available() = {_ollama_up}")
+    ai_questions = []
 
     if _ollama_up:
-        prompt = f"""Generate exactly {count} multiple-choice questions (MCQ) for Class {grade} topic: {topic} ({subject}).
-Use the context below. Each question MUST have exactly 4 options (A, B, C, D) and one correct answer. Keep explanations extremely short (max 10 words) to save time.
+        # Role-aware difficulty instruction for AI
+        if role == "teacher":
+            difficulty_note = "Generate HARD, exam-level questions requiring critical thinking and deep subject knowledge."
+        else:
+            difficulty_note = "Mix difficulty: 30% easy (recall), 50% medium (application), 20% hard (analysis)."
+
+        prompt = f"""Generate exactly {ai_needed} multiple-choice questions (MCQ) for Class {grade} topic: {topic} ({subject}).
+{difficulty_note}
+Use the context below. Each question MUST have exactly 4 options (A, B, C, D) and one correct answer.
 
 Format STRICTLY like this for each question:
 Question 1: [question text]
@@ -736,7 +776,6 @@ Correct: [A or B or C or D]
 Explanation: [one sentence]
 
 Rules:
-- Vary difficulty: mix easy, medium, hard.
 - Do NOT repeat questions.
 - Base questions on the context ONLY.
 - DO NOT add any conversational preamble. Start directly with "Question 1:".
@@ -744,55 +783,126 @@ Rules:
 Context:
 {context or f"Topic: {topic}. Subject: {subject}. Grade: {grade}."}
 
-Generate {count} questions now:"""
+Generate {ai_needed} questions now:"""
 
-        print(f"[quiz] Calling Ollama (model={_ollama_model}, max_tokens={min(1500, count * 100)})...")
-        ollama_raw = call_ollama(prompt, max_tokens=min(1500, count * 100))
+        print(f"[quiz] Calling Ollama for {ai_needed} remaining questions (model={_ollama_model})...")
+        ollama_raw = call_ollama(prompt, max_tokens=min(1500, ai_needed * 100))
 
         if ollama_raw:
-            print(f"[quiz] Ollama responded: {len(ollama_raw)} chars. Parsing MCQs...")
-            out = _parse_mcqs(ollama_raw, count)
-            print(f"[quiz] Parsed {len(out)} MCQs from Ollama response.")
-
-            if out:
-                # ✅ Got at least 1 valid MCQ from Ollama → use it, pad with RAG if needed
-                if len(out) < count and chunks:
-                    extras = _rag_quiz_fallback(topic, subject, grade, count - len(out), chunks)
-                    print(f"[quiz] Padded with {len(extras)} RAG questions.")
-                    out += extras
-                return {"questions": out[:count], "model_used": "ollama"}
-            else:
-                # Ollama responded but we couldn't parse any MCQs — return raw for debugging
-                print(f"[quiz] ⚠️  Ollama response could not be parsed into MCQs.")
-                print(f"[quiz] Raw Ollama output (first 500 chars): {ollama_raw[:500]}")
+            ai_questions = _parse_mcqs(ollama_raw, ai_needed)
+            print(f"[quiz] Ollama parsed {len(ai_questions)} MCQs.")
         else:
             print(f"[quiz] ⚠️  Ollama returned None (timeout or model error).")
 
-    # ── 2. RAG template-based (no LLM needed, works offline) ──────────────
-    print(f"[quiz] Falling back to RAG template (chunks={len(chunks)}).")
-    if chunks:
-        out = _rag_quiz_fallback(topic, subject, grade, count, chunks)
-        if out:
-            import random
-            while len(out) < count:
-                base = dict(random.choice(out))
-                base["question_text"] = base["question_text"].replace("TRUE", "CORRECT") \
-                                                              .replace("Fill in", "Complete")
-                out.append(base)
-            return {
-                "questions": out[:count],
-                "model_used": "rag_template",
-                "note": "Ollama was not available or could not generate MCQs. Check server logs for details. Run: ollama serve && ollama pull mistral",
-            }
+    # ── Step 4: RAG template fallback if Ollama failed ────────────────────
+    if not ai_questions and chunks:
+        ai_questions = _rag_quiz_fallback(topic, subject, grade, ai_needed, chunks)
+        print(f"[quiz] RAG template returned {len(ai_questions)} questions.")
 
-    # ── 3. No content at all ────────────────────────────────────────────────
+    # ── Step 5: Merge DB + AI results ─────────────────────────────────────
+    import random as _random
+    merged = db_questions + ai_questions
+    if merged:
+        _random.shuffle(merged)  # Shuffle so DB and AI questions are interleaved naturally
+        used_model = "question_bank_db" if not ai_questions else ("ollama" if _ollama_up else "rag_template")
+        print(f"[quiz] ✅ HYBRID: {len(db_questions)} DB + {len(ai_questions)} AI = {len(merged)} total.")
+        return {
+            "questions": merged[:count],
+            "model_used": used_model,
+            "source": "hybrid_db_and_ai" if ai_questions else "database",
+            "db_count": len(db_questions),
+            "ai_count": len(ai_questions),
+        }
+
+    # ── Step 6: Complete failure ──────────────────────────────────────────
     raise HTTPException(
         status_code=422,
         detail=(
-            f"No documents indexed for topic '{topic}'. "
-            "Please ingest a PDF or URL first via POST /ingest."
+            f"No questions found in DB and no documents indexed for topic '{topic}'. "
+            "Please upload questions via Excel bulk upload or ingest a PDF first."
         ),
     )
 
 
+# ---------------------------------------------------------------------------
+# Helper: Fetch questions from Node.js Question Bank API
+# ---------------------------------------------------------------------------
 
+def _fetch_from_question_bank(
+    topic: str,
+    subject: str,
+    grade: int,
+    count: int,
+    role: str,
+    db_base: str,
+    service_key: str,
+) -> List[dict]:
+    """
+    Fetch questions from the Node.js Question Bank API.
+    Maps role to level filter:
+      teacher -> Hard only
+      student -> Easy + Medium + some Hard (shuffled mix)
+    Returns a list of normalized MCQ dicts.
+    """
+    import requests as _req
+    import random as _random
+
+    headers = {"Content-Type": "application/json"}
+    if service_key:
+        headers["x-service-key"] = service_key
+
+    def _call(level: Optional[str], lim: int) -> List[dict]:
+        params: dict = {
+            "topic_name": topic,
+            "grade":      str(grade),
+            "limit":      str(lim),
+            "random":     "true",
+        }
+        if level:
+            params["level"] = level
+        try:
+            resp = _req.get(
+                f"{db_base}/api/subjects/question-bank",
+                params=params,
+                headers=headers,
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                rows = resp.json().get("data", [])
+                return [
+                    {
+                        "question_text":  r.get("question_text", ""),
+                        "option_a":       r.get("option_a", ""),
+                        "option_b":       r.get("option_b", ""),
+                        "option_c":       r.get("option_c", ""),
+                        "option_d":       r.get("option_d", ""),
+                        "correct_option": r.get("correct_option", "A"),
+                        "explanation":    r.get("explanation") or "",
+                        "level":          r.get("level") or "",
+                        "source":         "database",
+                    }
+                    for r in rows
+                    if r.get("question_text")
+                ]
+            else:
+                print(f"[quiz] DB API returned HTTP {resp.status_code} for level={level!r}")
+        except Exception as e:
+            print(f"[quiz] DB fetch error (level={level!r}): {e}")
+        return []
+
+    if role == "teacher":
+        # Teacher gets Hard questions only
+        return _call("Hard", count)
+    else:
+        # Student gets a natural mix: Easy + Medium + some Hard
+        easy_count   = max(1, int(count * 0.35))
+        medium_count = max(1, int(count * 0.40))
+        hard_count   = max(0, count - easy_count - medium_count)
+
+        easy_qs   = _call("Easy",   easy_count)
+        medium_qs = _call("Medium", medium_count)
+        hard_qs   = _call("Hard",   hard_count) if hard_count > 0 else []
+
+        combined = easy_qs + medium_qs + hard_qs
+        _random.shuffle(combined)
+        return combined
