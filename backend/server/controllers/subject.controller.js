@@ -599,6 +599,8 @@ export async function getQuestionBank(req, res) {
   const page = Math.max(1, parseInt(req.query.page || "1", 10));
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || "50", 10)));
   const offset = (page - 1) * limit;
+  // random=true: used by the AI service to get a varied selection (ORDER BY RAND())
+  const useRandom = req.query.random === "true";
 
   const conditions = [];
   const params = [];
@@ -625,6 +627,8 @@ export async function getQuestionBank(req, res) {
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  // Use ORDER BY RAND() only for AI requests; use created_at DESC for normal admin UI
+  const orderBy = useRandom ? "ORDER BY RAND()" : "ORDER BY sqb.created_at DESC";
 
   try {
     const [[{ total }]] = await db.query(
@@ -637,7 +641,7 @@ export async function getQuestionBank(req, res) {
        FROM subject_quiz_bank sqb
        JOIN subjects s ON s.id = sqb.subject_id
        ${where}
-       ORDER BY sqb.created_at DESC
+       ${orderBy}
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
@@ -660,6 +664,7 @@ export async function getQuestionBank(req, res) {
     return res.status(500).json({ error: String(err.message) });
   }
 }
+
 
 /* ──────────────────────────────────────────────────────────────
    5. UPDATE — Edit a single question

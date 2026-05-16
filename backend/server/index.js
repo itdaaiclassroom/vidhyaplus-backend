@@ -2037,6 +2037,11 @@ async function fetchQuizQuestions(topicName, subjectName, grade = 10, count = 10
 
   // Try AI server first
   try {
+    // Determine role: if triggered from live-quiz (teacher context) use 'teacher', else 'student'
+    const quizRole = meta && meta.isTeacherContext ? "teacher" : "student";
+    const nodeApiUrl = process.env.NODE_API_URL || `http://localhost:${process.env.PORT || 5000}`;
+    const serviceKey = process.env.AI_SERVICE_KEY || "";
+
     const aiRes = await fetch("http://187.127.158.229:8001/generate_quiz", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2044,9 +2049,13 @@ async function fetchQuizQuestions(topicName, subjectName, grade = 10, count = 10
         topic_name: topicName,
         subject: subjectName,
         grade: Number(grade) || 10,
-        count: Number(count) || 10
+        count: Number(count) || 10,
+        role: quizRole,
+        db_api_url: nodeApiUrl,
+        service_key: serviceKey,
       }),
     });
+
     if (aiRes.ok) {
       const data = await aiRes.json();
       if (data.questions && data.questions.length > 0) {
@@ -2191,7 +2200,7 @@ app.post("/api/live-quiz", async (req, res) => {
     const classRow = await db.query("SELECT grade_id FROM sections WHERE id = ?", [Number(classId)]).then(([r]) => r && r[0]).catch(() => null);
     const grade = classRow ? classRow.grade_id : 10;
 
-    const questions = await fetchQuizQuestions(topicName, subjectName, grade, numQuestionsToCreate, { topicId, chapterId, subjectId });
+    const questions = await fetchQuizQuestions(topicName, subjectName, grade, numQuestionsToCreate, { topicId, chapterId, subjectId, isTeacherContext: true });
     const fallbackQuestions = Array.from({ length: numQuestionsToCreate }).map((_, i) => ({
       question_text: `Question ${i + 1}: ${String(topicName)} (generated fallback)`,
       option_a: "A",

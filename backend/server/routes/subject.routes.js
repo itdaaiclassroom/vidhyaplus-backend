@@ -22,14 +22,36 @@ import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
+// ── Service-to-Service Auth Middleware ────────────────────────────────────
+// Used by the AI Python service to call the question bank without a user JWT.
+const serviceKeyAuth = (req, res, next) => {
+  const key = req.headers["x-service-key"] || "";
+  const expected = process.env.AI_SERVICE_KEY || "";
+  if (expected && key === expected) {
+    // Attach a synthetic service identity so downstream code doesn't break
+    req.user = { id: "ai-service", role: "service" };
+    return next();
+  }
+  return next(); // Fall through to regular JWT auth
+};
+
 // ── Question Bank (Static Routes) ─────────────────────────────────────────
 // ⚠️ Static paths MUST be registered BEFORE the dynamic /:id routes
 
 // System-wide list (admin/principal can query across all subjects)
+// Also accessible by AI service using x-service-key header
 router.get(
   "/question-bank",
-  authenticateJWT,
-  authorizeRole(["admin", "principal", "teacher", "material_management"]),
+  serviceKeyAuth,
+  (req, res, next) => {
+    // If service-key auth passed (req.user set as service), skip JWT
+    if (req.user && req.user.role === "service") return next();
+    return authenticateJWT(req, res, next);
+  },
+  (req, res, next) => {
+    if (req.user && req.user.role === "service") return next();
+    return authorizeRole(["admin", "principal", "teacher", "material_management"])(req, res, next);
+  },
   getQuestionBank
 );
 
