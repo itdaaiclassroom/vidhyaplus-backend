@@ -46,3 +46,6 @@ env
 **/ai_model/syllabus_vectors.faiss
 # Legacy root copy removed; use backend/ai_model only
 /ai_model
+
+# Local utility and check scripts
+backend/scripts/

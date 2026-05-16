@@ -70,31 +70,28 @@ export async function getChapterGatingStatus(req, res) {
        GROUP BY chapter_id`,
       [teacher_id, chapterIds]
     );
+
+    // Fetch per-chapter assessment configurations (passing marks, total marks)
+    const [chapterConfigs] = await db.query(
+      "SELECT chapter_id, total_marks, passing_marks FROM chapter_assessment_config WHERE chapter_id IN (?)",
+      [chapterIds]
+    );
+    const configMap = {};
+    chapterConfigs.forEach(c => {
+      configMap[c.chapter_id] = {
+        totalMarks: c.total_marks,
+        passingMarks: c.passing_marks,
+        // Calculate effective passing percentage for UI
+        passPercentage: c.total_marks > 0 ? (c.passing_marks / c.total_marks) * 100 : teacherPassPct
+      };
+    });
+
     const assessmentMap = {};
     assessments.forEach((a) => {
       assessmentMap[a.chapter_id] = {
         passed: Boolean(a.passed),
         bestScore: parseFloat(a.best_score) || 0,
         attempts: a.attempts || 0,
-      };
-    });
-
-    // Student performance per chapter
-    const [performances] = await db.query(
-      `SELECT chapter_id, avg_score, pass_percentage, total_students,
-              students_passed, threshold_met
-       FROM class_chapter_performance
-       WHERE class_id = ? AND chapter_id IN (?)`,
-      [class_id, chapterIds]
-    );
-    const perfMap = {};
-    performances.forEach((p) => {
-      perfMap[p.chapter_id] = {
-        avgScore: parseFloat(p.avg_score) || 0,
-        passPercentage: parseFloat(p.pass_percentage) || 0,
-        totalStudents: p.total_students || 0,
-        studentsPassed: p.students_passed || 0,
-        thresholdMet: Boolean(p.threshold_met),
       };
     });
 
@@ -108,6 +105,81 @@ export async function getChapterGatingStatus(req, res) {
     overrides.forEach((o) => {
       overrideMap[o.chapter_id] = o.override_type;
     });
+
+    // Student performance per chapter (Calculated dynamically to ensure consistency with Topic scores)
+    const [performances] = await db.query(
+      `SELECT 
+         chapter_id,
+         AVG(student_avg) as avg_score,
+         SUM(CASE WHEN student_avg >= ? THEN 1 ELSE 0 END) as students_passed
+       FROM (
+         SELECT 
+           lqs.chapter_id,
+           sm.student_id,
+           AVG((sm.score / NULLIF(sm.total, 0)) * 100) as student_avg
+         FROM live_quiz_sessions lqs
+         JOIN student_marks sm ON sm.live_quiz_session_id = lqs.id
+         JOIN students st ON st.id = sm.student_id
+         WHERE st.section_id = ? AND lqs.chapter_id IN (?) AND lqs.topic_id IS NOT NULL
+         GROUP BY lqs.chapter_id, sm.student_id
+       ) AS chapter_summaries
+       GROUP BY chapter_id`,
+      [studentThresholdPct, class_id, chapterIds]
+    );
+
+    // Get total students in this class/section for the denominator
+    const [[{ total_class_students }]] = await db.query(
+      "SELECT COUNT(*) as total_class_students FROM students WHERE section_id = ?",
+      [class_id]
+    );
+
+    const perfMap = {};
+    performances.forEach((p) => {
+      const totalStudents = total_class_students || 0;
+      // Ensure studentsPassed never exceeds the actual number of students currently in the class
+      const studentsPassed = Math.min(p.students_passed || 0, totalStudents);
+      const passPercentage = totalStudents > 0 ? (studentsPassed / totalStudents) * 100 : 0;
+
+      console.log(`[Gating Debug] Chapter: ${p.chapter_id} | Raw Passed: ${p.students_passed} | Capped Passed: ${studentsPassed} | Total: ${totalStudents}`);
+
+      perfMap[p.chapter_id] = {
+        avgScore: parseFloat(p.avg_score) || 0,
+        passPercentage: passPercentage,
+        totalStudents: totalStudents,
+        studentsPassed: studentsPassed,
+        thresholdMet: passPercentage >= studentThresholdPct,
+      };
+    });
+
+    // Topic scores based on live quiz sessions for the class
+    let topicScores = {};
+    try {
+      const [topicScoresData] = await db.query(
+        `SELECT 
+           topic_id, 
+           AVG(student_topic_avg) as avg_score 
+         FROM (
+           SELECT 
+             lqs.topic_id, 
+             sm.student_id, 
+             AVG((sm.score / NULLIF(sm.total, 0)) * 100) as student_topic_avg
+           FROM live_quiz_sessions lqs
+           JOIN student_marks sm ON sm.live_quiz_session_id = lqs.id
+           WHERE lqs.class_id = ? AND lqs.chapter_id IN (?) AND lqs.topic_id IS NOT NULL
+           GROUP BY lqs.topic_id, sm.student_id
+         ) AS topic_student_summaries
+         GROUP BY topic_id`,
+        [class_id, chapterIds]
+      );
+      topicScoresData.forEach(ts => {
+        topicScores[ts.topic_id] = {
+          avgScore: parseFloat(ts.avg_score) || 0,
+          thresholdMet: (parseFloat(ts.avg_score) || 0) >= studentThresholdPct
+        };
+      });
+    } catch (err) {
+      console.warn("Could not fetch topic scores:", err.message);
+    }
 
     // Build status for each chapter
     const result = [];
@@ -166,6 +238,8 @@ export async function getChapterGatingStatus(req, res) {
         if (!assessmentAvailable) isLocked = true;
       }
 
+      const chConfig = configMap[chId] || { passPercentage: teacherPassPct };
+
       result.push({
         chapterId: chId,
         chapterNo: ch.chapter_no,
@@ -175,6 +249,7 @@ export async function getChapterGatingStatus(req, res) {
         teacherPassed: assess.passed,
         teacherBestScore: assess.bestScore,
         teacherAttempts: assess.attempts,
+        teacherPassThreshold: chConfig.passPercentage, // Use chapter-specific threshold if available
         studentAvgScore: perf.avgScore,
         studentPassPercentage: perf.passPercentage,
         studentThresholdMet: perf.thresholdMet,
@@ -190,6 +265,7 @@ export async function getChapterGatingStatus(req, res) {
       teacherPassThreshold: teacherPassPct,
       studentThreshold: studentThresholdPct,
       chapters: result,
+      topicScores,
     });
   } catch (err) {
     console.error("getChapterGatingStatus error:", err);
@@ -451,29 +527,35 @@ export async function computeStudentPerformance(req, res) {
     // Aggregate student marks for this chapter + class
     // We group by student first to get their individual chapter average,
     // then aggregate those averages to get class performance.
-    const [rows] = await db.query(
-      `SELECT 
-         COUNT(*) as total_students,
-         AVG(student_avg) as avg_score,
-         SUM(CASE WHEN student_avg >= ? THEN 1 ELSE 0 END) as students_passed
-       FROM (
-         SELECT 
-           sm.student_id,
-           AVG((sm.score / NULLIF(sm.total, 0)) * 100) as student_avg
-         FROM student_marks sm
-         JOIN students st ON st.id = sm.student_id
-         WHERE sm.chapter_id = ? AND st.section_id = ? AND sm.total > 0
-         GROUP BY sm.student_id
-       ) AS student_summaries`,
-      [studentThresholdPct, chapterId, classId]
-    );
+     const [rows] = await db.query(
+       `SELECT 
+          COUNT(*) as students_with_data,
+          AVG(student_avg) as avg_score,
+          SUM(CASE WHEN student_avg >= ? THEN 1 ELSE 0 END) as students_passed
+        FROM (
+          SELECT 
+            sm.student_id,
+            AVG((sm.score / NULLIF(sm.total, 0)) * 100) as student_avg
+          FROM student_marks sm
+          JOIN students st ON st.id = sm.student_id
+          WHERE sm.chapter_id = ? AND st.section_id = ? AND sm.total > 0 AND sm.assessment_type = 'live_quiz'
+          GROUP BY sm.student_id
+        ) AS student_summaries`,
+       [studentThresholdPct, chapterId, classId]
+     );
 
-    const data = rows[0] || {};
-    const totalStudents = data.total_students || 0;
-    const avgScore = parseFloat(data.avg_score) || 0;
-    const studentsPassed = parseInt(data.students_passed) || 0;
-    const passPercentage = totalStudents > 0 ? Math.round((studentsPassed / totalStudents) * 100 * 100) / 100 : 0;
-    const thresholdMet = avgScore >= studentThresholdPct;
+     // Get TRUE total students in this class for the denominator
+     const [[{ total_class_students }]] = await db.query(
+       "SELECT COUNT(*) as total_class_students FROM students WHERE section_id = ?",
+       [classId]
+     );
+
+     const data = rows[0] || {};
+     const studentsPassed = parseInt(data.students_passed) || 0;
+     const totalStudents = total_class_students || 0;
+     const avgScore = parseFloat(data.avg_score) || 0;
+     const passPercentage = totalStudents > 0 ? (studentsPassed / totalStudents) * 100 : 0;
+     const thresholdMet = passPercentage >= 60;
 
     // Upsert into class_chapter_performance
     await db.query(
@@ -531,16 +613,28 @@ export async function updateGatingConfig(req, res) {
   const db = getPool();
   try {
     const updates = req.body;
-    const validKeys = ["teacher_pass_percentage", "student_threshold_percentage", "gating_enabled", "allow_manual_override", "assessment_question_count", "assessment_total_marks", "assessment_passing_marks"];
+    const validKeys = [
+      "teacher_pass_percentage", 
+      "student_threshold_percentage", 
+      "gating_enabled", 
+      "allow_manual_override", 
+      "assessment_question_count", 
+      "assessment_total_marks", 
+      "assessment_passing_marks",
+      "student_quiz_question_count",
+      "student_quiz_total_marks",
+      "student_quiz_passing_marks"
+    ];
     let updated = 0;
+    console.log("updateGatingConfig received updates:", updates);
 
     for (const key of validKeys) {
       if (updates[key] !== undefined) {
         let value = String(updates[key]);
         
         await db.query(
-          "UPDATE gating_config SET config_value = ? WHERE config_key = ?",
-          [value, key]
+          "INSERT INTO gating_config (config_key, config_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE config_value = ?",
+          [key, value, value]
         );
         updated++;
       }
@@ -563,10 +657,10 @@ export async function getChapterAssessmentConfig(req, res) {
     const { subjectId } = req.params;
     if (!subjectId) return res.status(400).json({ error: "Missing subjectId" });
 
-    // Get global defaults
-    const globalQuestionCount = parseInt(await getConfigValue(db, "assessment_question_count", "10")) || 10;
-    const globalTotalMarks = parseInt(await getConfigValue(db, "assessment_total_marks", "100")) || 100;
-    const globalPassingMarks = parseInt(await getConfigValue(db, "assessment_passing_marks", "70")) || 70;
+    // Get global defaults (for student quizzes)
+    const globalQuestionCount = parseInt(await getConfigValue(db, "student_quiz_question_count", "10")) || 10;
+    const globalTotalMarks = parseInt(await getConfigValue(db, "student_quiz_total_marks", "100")) || 100;
+    const globalPassingMarks = parseInt(await getConfigValue(db, "student_quiz_passing_marks", "70")) || 70;
 
     // Get all chapters for this subject
     const [chapters] = await db.query(
