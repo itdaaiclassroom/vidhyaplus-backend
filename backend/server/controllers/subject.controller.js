@@ -39,7 +39,7 @@ export async function getSubject(req, res) {
 export async function createSubject(req, res) {
   const db = getPool();
   const { name, grades, icon } = req.body;
-  
+
   if (!name) {
     return res.status(400).json({ error: "name is required" });
   }
@@ -123,14 +123,14 @@ export async function getSubjectMaterials(req, res) {
     const gradeId = req.query.grade_id ? Number(req.query.grade_id) : null;
     let sql = "SELECT id, subject_id, grade_id, title, file_path, uploaded_by, created_at FROM subject_materials WHERE subject_id = ?";
     const params = [id];
-    
+
     if (gradeId) {
       sql += " AND grade_id = ?";
       params.push(gradeId);
     }
-    
+
     sql += " ORDER BY created_at DESC";
-    
+
     const [rows] = await db.query(sql, params);
     res.json(rows);
   } catch (err) {
@@ -161,7 +161,7 @@ export async function uploadSubjectMaterial(req, res) {
     // Save file via assetStorage
     const safeKey = `subject_materials/sub${id}_${Date.now()}.pdf`;
     const buffer = Buffer.from(file.replace(/^data:[^;]+;base64,/, ""), "base64");
-    
+
     if (buffer.length === 0) {
       return res.status(400).json({ error: "file content is empty" });
     }
@@ -284,8 +284,7 @@ function normalizeLevel(raw) {
 ──────────────────────────────────────────────────────────────── */
 export async function bulkUploadQuestions(req, res) {
   const db = getPool();
-  const { file, topic_id } = req.body;
-  const topicId = topic_id ? Number(topic_id) : null;
+  const { file } = req.body;
   if (!file) return res.status(400).json({ error: "file (base64) is required" });
 
   try {
@@ -314,32 +313,32 @@ export async function bulkUploadQuestions(req, res) {
     }
 
     const actor = actorFromReq(req);
-    const uploadedBy   = actor.actor_name;
+    const uploadedBy = actor.actor_name;
     const uploadedById = actor.actor_id;
 
-    const validRows  = [];
-    const errorRows  = [];
+    const validRows = [];
+    const errorRows = [];
 
     for (let i = 0; i < rows.length; i++) {
-      const row     = rows[i];
-      const rowNum  = i + 2; // +2 because row 1 is the header in Excel
+      const row = rows[i];
+      const rowNum = i + 2; // +2 because row 1 is the header in Excel
 
       const keys = Object.fromEntries(
         Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), String(v ?? "").trim()])
       );
 
-      const rawSubject    = keys["subject"] || keys["subject name"] || "";
-      const questionText  = keys["question"] || keys["question text"] || "";
-      const optionA       = keys["option a"] || keys["a"] || "";
-      const optionB       = keys["option b"] || keys["b"] || "";
-      const optionC       = keys["option c"] || keys["c"] || "";
-      const optionD       = keys["option d"] || keys["d"] || "";
-      const rawCorrect    = keys["correct answer"] || keys["correct"] || keys["answer"] || "";
-      const explanation   = keys["explanation"] || keys["explain"] || null;
-      const chapter       = keys["chapter"] || null;
-      const rawGrade      = keys["grade"] || keys["class"] || null;
-      const topicName     = keys["topic name"] || keys["topic"] || null;
-      const rawLevel      = keys["level"] || keys["difficulty"] || null;
+      const rawSubject = keys["subject"] || keys["subject name"] || "";
+      const questionText = keys["question"] || keys["question text"] || "";
+      const optionA = keys["option a"] || keys["a"] || "";
+      const optionB = keys["option b"] || keys["b"] || "";
+      const optionC = keys["option c"] || keys["c"] || "";
+      const optionD = keys["option d"] || keys["d"] || "";
+      const rawCorrect = keys["correct answer"] || keys["correct"] || keys["answer"] || "";
+      const explanation = keys["explanation"] || keys["explain"] || null;
+      const chapter = keys["chapter"] || null;
+      const rawGrade = keys["grade"] || keys["class"] || null;
+      const topicName = keys["topic name"] || keys["topic"] || null;
+      const rawLevel = keys["level"] || keys["difficulty"] || null;
 
       // Validate Subject
       if (!rawSubject) {
@@ -351,8 +350,6 @@ export async function bulkUploadQuestions(req, res) {
         errorRows.push({ row: rowNum, reason: `Subject '${rawSubject}' not found in database.` });
         continue;
       }
-      const assignedFor   = keys["assigned for"] || keys["assigned"] || "both";
-
       // Validate required fields
       if (!questionText) {
         errorRows.push({ row: rowNum, reason: "Question text is missing" });
@@ -384,37 +381,9 @@ export async function bulkUploadQuestions(req, res) {
         optionD,
         correctOption,
         explanation && explanation.length > 0 ? explanation : null,
-        assignedFor,
         uploadedBy,
         uploadedById,
       ]);
-    }
-
-    const topicQuizRows = [];
-    if (topicId) {
-      for (const row of rows) {
-        const keys = Object.fromEntries(
-          Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), String(v ?? "").trim()])
-        );
-        const questionText = keys["question"] || keys["question text"] || "";
-        const optionA      = keys["option a"] || keys["a"] || "";
-        const optionB      = keys["option b"] || keys["b"] || "";
-        const optionC      = keys["option c"] || keys["c"] || "";
-        const optionD      = keys["option d"] || keys["d"] || "";
-        const rawCorrect   = keys["correct answer"] || keys["correct"] || keys["answer"] || "";
-        const explanation  = keys["explanation"] || keys["explain"] || null;
-        
-        const correctOption = normalizeCorrectOption(rawCorrect);
-        if (questionText && optionA && optionB && optionC && optionD && correctOption) {
-          topicQuizRows.push([
-            topicId,
-            questionText,
-            optionA, optionB, optionC, optionD,
-            correctOption,
-            explanation && explanation.length > 0 ? explanation : null
-          ]);
-        }
-      }
     }
 
     // Bulk insert all valid rows in one query
@@ -424,41 +393,32 @@ export async function bulkUploadQuestions(req, res) {
         `INSERT INTO subject_quiz_bank
           (subject_id, chapter, grade, topic_name, level, question_text,
            option_a, option_b, option_c, option_d,
-           correct_option, explanation, assigned_for, uploaded_by, uploaded_by_id)
+           correct_option, explanation, uploaded_by, uploaded_by_id)
          VALUES ?`,
         [validRows]
       );
       insertedCount = insertResult.affectedRows;
     }
 
-    if (topicQuizRows.length > 0) {
-      await db.query(
-        `INSERT INTO topic_quiz_bank
-          (topic_id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation)
-         VALUES ?`,
-        [topicQuizRows]
-      );
-    }
-
     // Audit log
     await auditLog(db, {
       ...actor,
-      action:    "CREATE",
-      entity:    "question_bank_bulk_global",
+      action: "CREATE",
+      entity: "question_bank_bulk_global",
       entity_id: "global",
       meta: {
-        total_rows:   rows.length,
-        uploaded:     insertedCount,
-        failed:       errorRows.length,
+        total_rows: rows.length,
+        uploaded: insertedCount,
+        failed: errorRows.length,
       },
       req,
     });
 
     return res.status(201).json({
-      ok:       true,
+      ok: true,
       uploaded: insertedCount,
-      failed:   errorRows.length,
-      errors:   errorRows,
+      failed: errorRows.length,
+      errors: errorRows,
     });
   } catch (err) {
     console.error("POST /api/subjects/question-bank/bulk error:", err);
@@ -477,11 +437,8 @@ export async function createSubjectQuestion(req, res) {
 
   const {
     question_text, option_a, option_b, option_c, option_d,
-    correct_option, explanation, chapter, grade, topic_name, level,
-    assigned_for, topic_id
+    correct_option, explanation, chapter, grade, topic_name, level
   } = req.body;
-
-  const topicId = topic_id ? Number(topic_id) : null;
 
   if (!question_text || !option_a || !option_b || !option_c || !option_d) {
     return res.status(400).json({ error: "question_text and all four options are required" });
@@ -500,8 +457,8 @@ export async function createSubjectQuestion(req, res) {
       `INSERT INTO subject_quiz_bank
         (subject_id, chapter, grade, topic_name, level, question_text,
          option_a, option_b, option_c, option_d,
-         correct_option, explanation, assigned_for, uploaded_by, uploaded_by_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         correct_option, explanation, uploaded_by, uploaded_by_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         subjectId,
         chapter || null,
@@ -512,7 +469,6 @@ export async function createSubjectQuestion(req, res) {
         option_a, option_b, option_c, option_d,
         normalizedCorrect,
         explanation || null,
-        assigned_for || 'both',
         actor.actor_name,
         actor.actor_id,
       ]
@@ -525,21 +481,6 @@ export async function createSubjectQuestion(req, res) {
       req,
     });
 
-    if (topicId) {
-      await db.query(
-        `INSERT INTO topic_quiz_bank
-          (topic_id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          topicId,
-          question_text,
-          option_a, option_b, option_c, option_d,
-          normalizedCorrect,
-          explanation || null
-        ]
-      );
-    }
-
     return res.status(201).json({ ok: true, id: String(result.insertId), subject_id: subjectId });
   } catch (err) {
     console.error("POST /api/subjects/:id/question-bank error:", err);
@@ -551,7 +492,7 @@ export async function getSubjectTopics(req, res) {
   const db = getPool();
   const subjectId = Number(req.params.id);
   const grade = req.query.grade ? Number(req.query.grade) : null;
-  
+
   try {
     let query = `
       SELECT t.id, t.name, t.chapter_id, c.chapter_name 
@@ -560,14 +501,14 @@ export async function getSubjectTopics(req, res) {
       WHERE c.subject_id = ?
     `;
     const params = [subjectId];
-    
+
     if (grade) {
       query += " AND c.grade_id = ?";
       params.push(grade);
     }
-    
+
     query += " ORDER BY c.chapter_name, t.id";
-    
+
     const [rows] = await db.query(query, params);
     res.json(rows);
   } catch (err) {
@@ -586,12 +527,12 @@ export async function getSubjectQuestionBank(req, res) {
   const subjectId = Number(req.params.id);
   if (!subjectId) return res.status(400).json({ error: "subject id required" });
 
-  const page  = Math.max(1, parseInt(req.query.page  || "1", 10));
+  const page = Math.max(1, parseInt(req.query.page || "1", 10));
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || "50", 10)));
   const offset = (page - 1) * limit;
 
   const conditions = ["sqb.subject_id = ?"];
-  const params     = [subjectId];
+  const params = [subjectId];
 
   if (req.query.grade) {
     const g = normalizeGrade(req.query.grade);
@@ -619,7 +560,7 @@ export async function getSubjectQuestionBank(req, res) {
     const [rows] = await db.query(
       `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade, sqb.topic_name, sqb.level,
               sqb.question_text, sqb.option_a, sqb.option_b, sqb.option_c, sqb.option_d,
-              sqb.correct_option, sqb.explanation, sqb.assigned_for, sqb.uploaded_by, sqb.created_at
+              sqb.correct_option, sqb.explanation, sqb.uploaded_by, sqb.created_at
        FROM subject_quiz_bank sqb
        JOIN subjects s ON s.id = sqb.subject_id
        ${where}
@@ -655,12 +596,12 @@ export async function getSubjectQuestionBank(req, res) {
 export async function getQuestionBank(req, res) {
   const db = getPool();
 
-  const page  = Math.max(1, parseInt(req.query.page  || "1", 10));
+  const page = Math.max(1, parseInt(req.query.page || "1", 10));
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || "50", 10)));
   const offset = (page - 1) * limit;
 
   const conditions = [];
-  const params     = [];
+  const params = [];
 
   if (req.query.subject_id) {
     conditions.push("sqb.subject_id = ?");
@@ -692,7 +633,7 @@ export async function getQuestionBank(req, res) {
     const [rows] = await db.query(
       `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade, sqb.topic_name, sqb.level,
               sqb.question_text, sqb.option_a, sqb.option_b, sqb.option_c, sqb.option_d,
-              sqb.correct_option, sqb.explanation, sqb.assigned_for, sqb.uploaded_by, sqb.created_at
+              sqb.correct_option, sqb.explanation, sqb.uploaded_by, sqb.created_at
        FROM subject_quiz_bank sqb
        JOIN subjects s ON s.id = sqb.subject_id
        ${where}
@@ -731,25 +672,23 @@ export async function updateSubjectQuestion(req, res) {
 
   const {
     question_text, option_a, option_b, option_c, option_d,
-    correct_option, explanation, chapter, grade, topic_name, level,
-    assigned_for
+    correct_option, explanation, chapter, grade, topic_name, level
   } = req.body;
 
   try {
     const updates = [];
-    const values  = [];
+    const values = [];
 
     if (question_text !== undefined) { updates.push("question_text = ?"); values.push(String(question_text).trim()); }
-    if (option_a !== undefined)      { updates.push("option_a = ?");      values.push(String(option_a).trim()); }
-    if (option_b !== undefined)      { updates.push("option_b = ?");      values.push(String(option_b).trim()); }
-    if (option_c !== undefined)      { updates.push("option_c = ?");      values.push(String(option_c).trim()); }
-    if (option_d !== undefined)      { updates.push("option_d = ?");      values.push(String(option_d).trim()); }
-    if (explanation !== undefined)   { updates.push("explanation = ?");   values.push(explanation || null); }
-    if (chapter !== undefined)       { updates.push("chapter = ?");       values.push(chapter || null); }
-    if (topic_name !== undefined)    { updates.push("topic_name = ?");    values.push(topic_name || null); }
-    if (grade !== undefined)         { updates.push("grade = ?");         values.push(normalizeGrade(grade)); }
-    if (level !== undefined)         { updates.push("level = ?");         values.push(normalizeLevel(level)); }
-    if (assigned_for !== undefined)  { updates.push("assigned_for = ?");  values.push(assigned_for); }
+    if (option_a !== undefined) { updates.push("option_a = ?"); values.push(String(option_a).trim()); }
+    if (option_b !== undefined) { updates.push("option_b = ?"); values.push(String(option_b).trim()); }
+    if (option_c !== undefined) { updates.push("option_c = ?"); values.push(String(option_c).trim()); }
+    if (option_d !== undefined) { updates.push("option_d = ?"); values.push(String(option_d).trim()); }
+    if (explanation !== undefined) { updates.push("explanation = ?"); values.push(explanation || null); }
+    if (chapter !== undefined) { updates.push("chapter = ?"); values.push(chapter || null); }
+    if (topic_name !== undefined) { updates.push("topic_name = ?"); values.push(topic_name || null); }
+    if (grade !== undefined) { updates.push("grade = ?"); values.push(normalizeGrade(grade)); }
+    if (level !== undefined) { updates.push("level = ?"); values.push(normalizeLevel(level)); }
     if (correct_option !== undefined) {
       const normalized = normalizeCorrectOption(correct_option);
       if (!normalized) return res.status(400).json({ error: "correct_option must be A, B, C, or D" });
@@ -803,3 +742,44 @@ export async function deleteSubjectQuestion(req, res) {
     return res.status(500).json({ error: String(err.message) });
   }
 }
+
+/**
+ * GET /api/subjects/question-bank/metadata
+ * Fetches unique chapters and topics for filtering.
+ */
+export async function getQuestionBankMetadata(req, res) {
+  const db = getPool();
+  const subjectId = req.query.subject_id ? Number(req.query.subject_id) : null;
+  const grade = req.query.grade ? Number(req.query.grade) : null;
+
+  try {
+    let where = "WHERE 1=1";
+    const params = [];
+    if (subjectId) {
+      where += " AND subject_id = ?";
+      params.push(subjectId);
+    }
+    if (grade) {
+      where += " AND grade = ?";
+      params.push(grade);
+    }
+
+    const [chapters] = await db.query(
+      `SELECT DISTINCT chapter FROM subject_quiz_bank ${where} AND chapter IS NOT NULL AND chapter != '' ORDER BY chapter`,
+      params
+    );
+    const [topics] = await db.query(
+      `SELECT DISTINCT topic_name FROM subject_quiz_bank ${where} AND topic_name IS NOT NULL AND topic_name != '' ORDER BY topic_name`,
+      params
+    );
+
+    res.json({
+      chapters: chapters.map(c => c.chapter),
+      topics: topics.map(t => t.topic_name)
+    });
+  } catch (err) {
+    console.error("GET /api/subjects/question-bank/metadata error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+

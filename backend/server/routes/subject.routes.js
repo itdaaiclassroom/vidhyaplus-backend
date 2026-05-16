@@ -16,6 +16,7 @@ import {
   updateSubjectQuestion,
   deleteSubjectQuestion,
   getSubjectTopics,
+  getQuestionBankMetadata,
 } from "../controllers/subject.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -30,6 +31,13 @@ router.get(
   authenticateJWT,
   authorizeRole(["admin", "principal", "teacher", "material_management"]),
   getQuestionBank
+);
+
+// Metadata for filters (unique chapters/topics)
+router.get(
+  "/question-bank/metadata",
+  authenticateJWT,
+  getQuestionBankMetadata
 );
 
 // Global bulk upload (.xlsx / .xls / .csv)
