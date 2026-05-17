@@ -694,7 +694,7 @@ export async function getQuestionBank(req, res) {
 
   try {
     const [[{ total }]] = await db.query(
-      `SELECT COUNT(*) AS total FROM subject_quiz_bank sqb ${where}`, params
+      `SELECT COUNT(*) AS total FROM subject_quiz_bank sqb JOIN subjects s ON s.id = sqb.subject_id ${where}`, params
     );
     const [rows] = await db.query(
       `SELECT sqb.id, sqb.subject_id, s.subject_name, sqb.chapter, sqb.grade, sqb.topic_name, sqb.level,
