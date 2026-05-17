@@ -354,6 +354,15 @@ export async function bulkUploadQuestions(req, res) {
     const uploadedBy = actor.actor_name;
     const uploadedById = actor.actor_id;
 
+    // --- DEDUPLICATION LOGIC ---
+    // Fetch all existing subject_id and question_text to build a fast memory Set
+    const [existingRows] = await db.query("SELECT subject_id, question_text FROM subject_quiz_bank");
+    const existingSet = new Set(
+      existingRows.map(r => `${r.subject_id}_${(r.question_text || "").trim().toLowerCase()}`)
+    );
+    let skippedCount = 0;
+    // ---------------------------
+
     const validRows = [];
     const errorRows = [];
 
@@ -406,6 +415,15 @@ export async function bulkUploadQuestions(req, res) {
       const grade = normalizeGrade(rawGrade);
       const level = normalizeLevel(rawLevel);
 
+      // --- DEDUPLICATION CHECK ---
+      const uniqueKey = `${subjectId}_${questionText.trim().toLowerCase()}`;
+      if (existingSet.has(uniqueKey)) {
+        skippedCount++;
+        continue;
+      }
+      existingSet.add(uniqueKey); // Prevent duplicates inside the SAME excel file
+      // ---------------------------
+
       validRows.push([
         subjectId,
         chapter && chapter.length > 0 ? chapter : null,
@@ -447,6 +465,7 @@ export async function bulkUploadQuestions(req, res) {
       meta: {
         total_rows: rows.length,
         uploaded: insertedCount,
+        skipped: skippedCount,
         failed: errorRows.length,
       },
       req,
@@ -455,6 +474,7 @@ export async function bulkUploadQuestions(req, res) {
     return res.status(201).json({
       ok: true,
       uploaded: insertedCount,
+      skipped: skippedCount,
       failed: errorRows.length,
       errors: errorRows,
     });
@@ -646,6 +666,10 @@ export async function getQuestionBank(req, res) {
   if (req.query.subject_id) {
     conditions.push("sqb.subject_id = ?");
     params.push(Number(req.query.subject_id));
+  }
+  if (req.query.subject_name) {
+    conditions.push("s.subject_name = ?");
+    params.push(String(req.query.subject_name).trim());
   }
   if (req.query.grade) {
     const g = normalizeGrade(req.query.grade);
