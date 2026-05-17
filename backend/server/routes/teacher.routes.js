@@ -10,8 +10,8 @@ router.get("/attendance", authenticateJWT, authorizeRole(["admin", "principal"])
 router.get("/:schoolId/students", authenticateJWT, authorizeRole(["teacher", "principal", "admin"]), getSchoolStudents);
 router.post("/", authenticateJWT, authorizeRole(["admin", "principal"]), createTeacher);
 router.post("/bulk", authenticateJWT, authorizeRole(["admin", "principal"]), bulkCreateTeachers);
-router.get("/dashboard/:id", authenticateJWT, getTeacherDashboard);
 router.get("/dashboard/broadcast-messages", authenticateJWT, getTeacherBroadcastMessages);
+router.get("/dashboard/:id", authenticateJWT, getTeacherDashboard);
 router.get("/:id/assignments", authenticateJWT, getTeacherAssignments);
 router.post("/:id/attendance", authenticateJWT, markSelfAttendance);
 router.get("/:id/attendance/today", authenticateJWT, getTodayAttendance);
