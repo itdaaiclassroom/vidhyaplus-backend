@@ -39,6 +39,13 @@ router.get("/dashboard/overview", getPrincipalOverview);
 router.get("/dashboard/school-ranking", getSchoolRanking);
 router.get("/dashboard/broadcast-messages", getBroadcastMessages);
 
+// School Announcements
+import { createSchoolAnnouncement, getSchoolAnnouncements, updateSchoolAnnouncement, deleteSchoolAnnouncement } from "../controllers/principal.controller.js";
+router.post("/announcements", createSchoolAnnouncement);
+router.get("/announcements", getSchoolAnnouncements);
+router.put("/announcements/:id", updateSchoolAnnouncement);
+router.delete("/announcements/:id", deleteSchoolAnnouncement);
+
 // Subjects master list CRUD
 router.get("/subjects", getSubjects);
 router.post("/subjects", createSubject);

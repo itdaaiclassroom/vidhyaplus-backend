@@ -485,6 +485,19 @@ export async function getTeacherBroadcastMessages(req, res) {
       messages = [...messages, ...(annRows || [])];
     } catch (_) { /* table may not exist */ }
 
+    // Also query school_announcements table (principal sends here)
+    try {
+      const schoolId = req.user?.school_id || req.user?.schoolId;
+      if (schoolId) {
+        const [schoolAnnRows] = await db.query(`
+          SELECT id, title, message, target_role AS target_audience, created_at FROM school_announcements 
+          WHERE school_id = ? AND (target_role = 'all' OR target_role = 'teacher' OR target_role = 'teachers')
+          ORDER BY created_at DESC LIMIT 10
+        `, [schoolId]);
+        messages = [...messages, ...(schoolAnnRows || [])];
+      }
+    } catch (_) { /* table may not exist */ }
+
     // Sort combined list by date and limit
     messages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     res.json(messages.slice(0, 20));
