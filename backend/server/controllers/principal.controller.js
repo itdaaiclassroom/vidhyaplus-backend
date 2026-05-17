@@ -855,11 +855,162 @@ export async function getBroadcastMessages(req, res) {
       messages = [...messages, ...(annRows || [])];
     } catch (_) { /* table may not exist */ }
 
+    // Query school_announcements table
+    try {
+      const schoolId = req.user.school_id || req.user.schoolId;
+      if (schoolId) {
+        const [schoolAnnRows] = await db.query(`
+          SELECT id, title, message, target_role AS target_audience, created_at FROM school_announcements 
+          WHERE school_id = ? AND (target_role = 'all' OR target_role = ?)
+          ORDER BY created_at DESC LIMIT 10
+        `, [schoolId, role]);
+        messages = [...messages, ...(schoolAnnRows || [])];
+      }
+    } catch (_) { /* table may not exist */ }
+
     // Sort combined list by date and limit
     messages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     res.json(messages.slice(0, 20));
   } catch (error) {
     console.error("getBroadcastMessages error:", error);
     res.status(500).json({ error: "Failed to fetch broadcast messages" });
+  }
+}
+
+// ── School Announcements ──
+
+export async function createSchoolAnnouncement(req, res) {
+  const db = getPool();
+  const { title, message, target_role } = req.body;
+  const principalId = req.user.id;
+  const schoolId = req.user.schoolId || req.user.school_id;
+
+  if (!title || !message) return res.status(400).json({ error: "Title and message required" });
+  if (!schoolId) return res.status(403).json({ error: "School ID not found in token" });
+
+  const effectiveRole = target_role || 'all';
+
+  try {
+    const [result] = await db.query(
+      "INSERT INTO school_announcements (school_id, sender_principal_id, title, message, target_role) VALUES (?, ?, ?, ?, ?)",
+      [schoolId, principalId, title, message, effectiveRole]
+    );
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "CREATE",
+      entity: "school_announcement",
+      entity_id: String(result.insertId),
+      meta: { title, target_role: effectiveRole, school_id: schoolId },
+      req,
+    });
+
+    res.json({ ok: true, message: "School Announcement sent" });
+  } catch (err) {
+    console.error("Create school announcement error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+
+export async function getSchoolAnnouncements(req, res) {
+  const db = getPool();
+  const schoolId = req.user.schoolId || req.user.school_id;
+  if (!schoolId) return res.status(403).json({ error: "School ID not found in token" });
+
+  try {
+    const [rows] = await db.query(`
+      SELECT sa.*, t.full_name as sender_name 
+      FROM school_announcements sa
+      JOIN teachers t ON t.id = sa.sender_principal_id
+      WHERE sa.school_id = ? 
+      ORDER BY sa.created_at DESC LIMIT 50
+    `, [schoolId]);
+    res.json(rows);
+  } catch (err) {
+    console.error("Get school announcements error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+
+export async function updateSchoolAnnouncement(req, res) {
+  const db = getPool();
+  const annId = Number(req.params.id);
+  const { title, message, target_role } = req.body;
+  const schoolId = req.user.schoolId || req.user.school_id;
+
+  if (!annId) return res.status(400).json({ error: "Announcement ID required" });
+  if (!schoolId) return res.status(403).json({ error: "School ID not found in token" });
+
+  try {
+    // Check if the announcement exists and belongs to this school
+    const [existing] = await db.query(
+      "SELECT id FROM school_announcements WHERE id = ? AND school_id = ? LIMIT 1",
+      [annId, schoolId]
+    );
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ error: "Announcement not found in your school" });
+    }
+
+    const updates = [];
+    const values = [];
+
+    if (title !== undefined) { updates.push("title = ?"); values.push(title); }
+    if (message !== undefined) { updates.push("message = ?"); values.push(message); }
+    if (target_role !== undefined) { updates.push("target_role = ?"); values.push(target_role); }
+
+    if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
+
+    values.push(annId);
+    await db.query(`UPDATE school_announcements SET ${updates.join(", ")} WHERE id = ?`, values);
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "UPDATE",
+      entity: "school_announcement",
+      entity_id: String(annId),
+      meta: { title, target_role, school_id: schoolId },
+      req,
+    });
+
+    res.json({ ok: true, message: "Announcement updated successfully" });
+  } catch (err) {
+    console.error("Update school announcement error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+
+export async function deleteSchoolAnnouncement(req, res) {
+  const db = getPool();
+  const annId = Number(req.params.id);
+  const schoolId = req.user.schoolId || req.user.school_id;
+
+  if (!annId) return res.status(400).json({ error: "Announcement ID required" });
+  if (!schoolId) return res.status(403).json({ error: "School ID not found in token" });
+
+  try {
+    // Check if the announcement exists and belongs to this school
+    const [existing] = await db.query(
+      "SELECT id FROM school_announcements WHERE id = ? AND school_id = ? LIMIT 1",
+      [annId, schoolId]
+    );
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ error: "Announcement not found in your school" });
+    }
+
+    await db.query("DELETE FROM school_announcements WHERE id = ?", [annId]);
+
+    await auditLog(db, {
+      ...actorFromReq(req),
+      action: "DELETE",
+      entity: "school_announcement",
+      entity_id: String(annId),
+      meta: { school_id: schoolId },
+      req,
+    });
+
+    res.json({ ok: true, message: "Announcement deleted successfully" });
+  } catch (err) {
+    console.error("Delete school announcement error:", err);
+    res.status(500).json({ error: String(err.message) });
   }
 }
