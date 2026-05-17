@@ -853,10 +853,11 @@ def _fetch_from_question_bank(
 
     def _call(level: Optional[str], lim: int) -> List[dict]:
         params: dict = {
-            "topic_name": topic,
-            "grade":      str(grade),
-            "limit":      str(lim),
-            "random":     "true",
+            "subject_name": subject,
+            "topic_name":   topic,
+            "grade":        str(grade),
+            "limit":        str(lim),
+            "random":       "true",
         }
         if level:
             params["level"] = level

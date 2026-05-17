@@ -647,6 +647,10 @@ export async function getQuestionBank(req, res) {
     conditions.push("sqb.subject_id = ?");
     params.push(Number(req.query.subject_id));
   }
+  if (req.query.subject_name) {
+    conditions.push("s.subject_name = ?");
+    params.push(String(req.query.subject_name).trim());
+  }
   if (req.query.grade) {
     const g = normalizeGrade(req.query.grade);
     if (g) { conditions.push("sqb.grade = ?"); params.push(g); }
