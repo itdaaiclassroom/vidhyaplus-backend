@@ -907,3 +907,192 @@ def _fetch_from_question_bank(
         combined = easy_qs + medium_qs + hard_qs
         _random.shuffle(combined)
         return combined
+
+# ---------------------------------------------------------------------------
+# API Route: POST /generate_teacher_quiz
+# ---------------------------------------------------------------------------
+
+class GenerateTeacherQuizBody(BaseModel):
+    chapter: str
+    subject: str = ""
+    grade: int = 10
+    count: int = 10
+    db_api_url: str = ""
+    service_key: str = ""
+
+def _fetch_chapter_from_question_bank(
+    chapter: str,
+    subject: str,
+    grade: int,
+    count: int,
+    db_base: str,
+    service_key: str,
+) -> List[dict]:
+    """
+    Fetch questions for a chapter and distribute them evenly across topics (Stratified Random Sampling).
+    Hardcoded to level="Hard" for teachers.
+    """
+    import requests as _req
+    import collections as _collections
+
+    headers = {"Content-Type": "application/json"}
+    if service_key:
+        headers["x-service-key"] = service_key
+
+    params: dict = {
+        "subject_name": subject,
+        "chapter":      chapter,
+        "grade":        str(grade),
+        "limit":        "200",  # Fetch a large pool to sample from
+        "random":       "true",
+        "level":        "Hard", # Hardcoded for teacher
+    }
+
+    try:
+        resp = _req.get(
+            f"{db_base}/api/subjects/question-bank",
+            params=params,
+            headers=headers,
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            rows = resp.json().get("data", [])
+            
+            # Group by topic_name
+            topics_map = _collections.defaultdict(list)
+            for r in rows:
+                if not r.get("question_text"):
+                    continue
+                t = r.get("topic_name") or "General"
+                topics_map[t].append({
+                    "question_text":  r.get("question_text", ""),
+                    "option_a":       r.get("option_a", ""),
+                    "option_b":       r.get("option_b", ""),
+                    "option_c":       r.get("option_c", ""),
+                    "option_d":       r.get("option_d", ""),
+                    "correct_option": r.get("correct_option", "A"),
+                    "explanation":    r.get("explanation") or "",
+                    "level":          r.get("level") or "Hard",
+                    "source":         "database",
+                })
+            
+            # Stratified Random Sampling (Round-Robin across topics)
+            selected = []
+            topics_list = list(topics_map.keys())
+            topic_idx = 0
+            
+            while len(selected) < count and topics_list:
+                t = topics_list[topic_idx % len(topics_list)]
+                if topics_map[t]:
+                    selected.append(topics_map[t].pop(0))
+                    topic_idx += 1
+                else:
+                    topics_list.pop(topic_idx % len(topics_list))
+                    if not topics_list:
+                        break
+                        
+            return selected
+        else:
+            print(f"[quiz] DB API returned HTTP {resp.status_code} for chapter={chapter!r}")
+    except Exception as e:
+        print(f"[quiz] DB fetch error (chapter={chapter!r}): {e}")
+    return []
+
+@router.post("/generate_teacher_quiz", summary="Generate a chapter-wide MCQ quiz evenly distributed across topics (Hard Level only)")
+def generate_teacher_quiz(body: GenerateTeacherQuizBody):
+    from fastapi import HTTPException
+    import os
+
+    chapter = (body.chapter or "").strip() or "General"
+    subject = (body.subject or "").strip() or "General"
+    grade   = body.grade or 10
+    count   = max(1, min(body.count, 50))
+
+    db_base = (
+        body.db_api_url.strip()
+        or os.environ.get("NODE_API_URL", "").strip()
+        or "http://localhost:5000"
+    ).rstrip("/")
+    service_key = (
+        body.service_key.strip()
+        or os.environ.get("AI_SERVICE_KEY", "").strip()
+    )
+
+    print(f"[teacher_quiz] Request: chapter={chapter!r} subject={subject!r} grade={grade} count={count}")
+
+    # 1. Fetch from Question Bank DB
+    db_questions = _fetch_chapter_from_question_bank(chapter, subject, grade, count, db_base, service_key)
+    print(f"[teacher_quiz] DB returned {len(db_questions)} questions evenly distributed across topics.")
+
+    if len(db_questions) >= count:
+        return {
+            "questions": db_questions[:count],
+            "model_used": "question_bank_db",
+            "source": "database",
+        }
+
+    # DB partial or empty - AI will fill the gap
+    ai_needed = count - len(db_questions)
+    print(f"[teacher_quiz] DB partial ({len(db_questions)}/{count}): need {ai_needed} more from AI.")
+
+    # 2. RAG retrieval
+    query           = f"{subject} class {grade} {chapter}"
+    retrieved_pairs = document_registry.retrieve_chunks(query, k=max(ai_needed * 2, 10))
+    chunks          = [chunk for chunk, _ in retrieved_pairs]
+    context         = "\n\n".join(chunks[:5])[:2500] if chunks else ""
+    
+    # 3. Ollama (Hard difficulty)
+    _ollama_up = ollama_available()
+    ai_questions = []
+
+    if _ollama_up:
+        difficulty_note = "Generate HARD, exam-level questions requiring critical thinking and deep subject knowledge."
+        prompt = f"""Generate exactly {ai_needed} multiple-choice questions (MCQ) for Class {grade} Chapter: {chapter} ({subject}).
+{difficulty_note}
+Use the context below. Each question MUST have exactly 4 options (A, B, C, D) and one correct answer.
+
+Format STRICTLY like this for each question:
+Question 1: [question text]
+A) [option]
+B) [option]
+C) [option]
+D) [option]
+Correct: [A or B or C or D]
+Explanation: [one sentence]
+
+Rules:
+- Do NOT repeat questions.
+- Base questions on the context ONLY.
+- DO NOT add any conversational preamble. Start directly with "Question 1:".
+
+Context:
+{context or f"Chapter: {chapter}. Subject: {subject}. Grade: {grade}."}
+
+Generate {ai_needed} questions now:"""
+
+        ollama_raw = call_ollama(prompt, max_tokens=min(1500, ai_needed * 100))
+        if ollama_raw:
+            ai_questions = _parse_mcqs(ollama_raw, ai_needed)
+
+    # 4. RAG fallback
+    if not ai_questions and chunks:
+        ai_questions = _rag_quiz_fallback(chapter, subject, grade, ai_needed, chunks)
+
+    # 5. Merge DB + AI
+    import random as _random
+    merged = db_questions + ai_questions
+    if merged:
+        _random.shuffle(merged)
+        used_model = "question_bank_db" if not ai_questions else ("ollama" if _ollama_up else "rag_template")
+        return {
+            "questions": merged[:count],
+            "model_used": used_model,
+            "source": "hybrid_db_and_ai" if ai_questions else "database",
+            "db_count": len(db_questions),
+            "ai_count": len(ai_questions),
+        }
+
+    raise HTTPException(
+        status_code=422,
+        detail=f"No questions found in DB and no documents indexed for chapter '{chapter}'. Please upload questions or ingest a PDF first.",
+    )
