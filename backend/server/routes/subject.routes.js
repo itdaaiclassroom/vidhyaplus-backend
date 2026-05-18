@@ -17,6 +17,7 @@ import {
   deleteSubjectQuestion,
   getSubjectTopics,
   getQuestionBankMetadata,
+  bulkDeleteQuestionsHandler,
 } from "../controllers/subject.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -68,6 +69,14 @@ router.post(
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
   bulkUploadQuestions
+);
+
+// Bulk delete multiple questions or delete all based on filters
+router.delete(
+  "/question-bank/bulk",
+  authenticateJWT,
+  authorizeRole(["admin", "principal", "material_management"]),
+  bulkDeleteQuestionsHandler
 );
 
 // Edit a single question
