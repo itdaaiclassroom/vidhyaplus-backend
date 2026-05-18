@@ -89,7 +89,7 @@ export async function teacherLogin(req, res) {
     if (teacher) {
       const ok = await verifyPassword(password, teacher.password);
       if (!ok) return res.status(401).json({ error: "Invalid credentials" });
-      
+
       const token = jwt.sign(
         { id: teacher.id, email: teacher.email, role: teacher.role || "teacher", school_id: teacher.school_id },
         JWT_SECRET,
@@ -119,26 +119,30 @@ export async function teacherLogin(req, res) {
  * POST /api/auth/login/student
  */
 export async function studentLogin(req, res) {
-  const sid = req.body?.student_id != null ? String(req.body.student_id).trim() : "";
+  const identifier = req.body?.email != null ? String(req.body.email).trim() : (req.body?.student_id != null ? String(req.body.student_id).trim() : "");
   const { password } = req.body || {};
-  if (!sid || !password) {
-    return res.status(400).json({ error: "Student ID and password are required" });
-  }
-  const numericId = parseInt(sid, 10);
-  if (Number.isNaN(numericId) || numericId < 1) {
-    return res.status(400).json({ error: "Student ID must be a positive number" });
+  if (!identifier || !password) {
+    return res.status(400).json({ error: "Email or Student ID and password are required" });
   }
   try {
     const db = getPool();
-    const [rows] = await db.query(
-      "SELECT id, first_name, last_name, school_id, password FROM students WHERE id = ? OR roll_no = ? LIMIT 1",
-      [numericId, sid]
-    );
+    let query, params;
+    
+    if (identifier.includes("@")) {
+      query = "SELECT id, first_name, last_name, school_id, password FROM students WHERE email = ? LIMIT 1";
+      params = [identifier];
+    } else {
+      const numericId = parseInt(identifier, 10);
+      query = "SELECT id, first_name, last_name, school_id, password FROM students WHERE id = ? OR roll_no = ? LIMIT 1";
+      params = [Number.isNaN(numericId) ? -1 : numericId, identifier];
+    }
+
+    const [rows] = await db.query(query, params);
     const student = Array.isArray(rows) && rows[0] ? rows[0] : null;
     if (student) {
       const ok = await verifyPassword(password, student.password);
       if (!ok) return res.status(401).json({ error: "Invalid credentials" });
-      
+
       const token = jwt.sign(
         { id: student.id, role: "student", school_id: student.school_id },
         JWT_SECRET,

@@ -271,7 +271,7 @@ export async function bulkCreateStudents(req, res) {
 
   for (const student of students) {
     const { 
-      full_name, first_name, last_name, roll_no, section, school_id, section_id, grade_id, 
+      full_name, first_name, last_name, roll_no, email, section, school_id, section_id, grade_id, 
       joined_at, password, category, profile_image_path,
       gender, dob, father_name, mother_name, phone, phone_number, aadhaar,
       address, village, mandal, district, state, pincode, hostel_status, is_hosteller, disabilities
@@ -314,9 +314,20 @@ export async function bulkCreateStudents(req, res) {
       const firstNameResolved = String(first_name || (fullName.split(" ")[0] || "Student")).trim();
       const lastNameResolved = String(last_name || fullName.split(" ").slice(1).join(" ") || "Demo").trim();
       const studentCategory = category || "A";
+      const emailVal = email ? String(email).trim() : null;
       
       const resolvedPhone = phone || phone_number || null;
       const resolvedIsHosteller = (hostel_status === 'Yes' || is_hosteller === true || is_hosteller === 1) ? 1 : 0;
+
+      // Uniqueness check for email
+      if (emailVal) {
+        const [teacherExist] = await db.query("SELECT id FROM teachers WHERE email = ? LIMIT 1", [emailVal]);
+        const [studentExist] = await db.query("SELECT id FROM students WHERE email = ? LIMIT 1", [emailVal]);
+        if (teacherExist.length > 0 || studentExist.length > 0) {
+          results.failed.push({ student, error: `Email '${emailVal}' is already registered in the system.` });
+          continue;
+        }
+      }
       
       // Duplicate Check
       let existingStudent = null;
@@ -339,14 +350,15 @@ export async function bulkCreateStudents(req, res) {
 
       const [insertResult] = await db.query(
         `INSERT INTO students (
-          school_id, section_id, first_name, last_name, roll_no, password, joined_at, category, profile_image_path,
+          school_id, section_id, first_name, last_name, email, roll_no, password, joined_at, category, profile_image_path,
           gender, dob, father_name, mother_name, phone_number, aadhaar, address, village, mandal, district, state, pincode, is_hosteller, disabilities
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           schoolIdNum, 
           resolvedSectionId, 
           firstNameResolved, 
-          lastNameResolved, 
+          lastNameResolved,
+          emailVal,
           roll_no || null,
           passwordPlain, 
           joined_at ? String(joined_at).slice(0, 10) : new Date().toISOString().slice(0, 10), 
