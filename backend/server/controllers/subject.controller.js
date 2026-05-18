@@ -850,3 +850,56 @@ export async function getQuestionBankMetadata(req, res) {
   }
 }
 
+/* ──────────────────────────────────────────────────────────────
+   7. BULK DELETE — Remove multiple questions or all based on filters
+   DELETE /api/subjects/question-bank/bulk
+──────────────────────────────────────────────────────────────── */
+export async function bulkDeleteQuestionsHandler(req, res) {
+  const db = getPool();
+  const { question_ids, delete_all, filters } = req.body;
+
+  try {
+    if (delete_all) {
+      // Delete based on filters
+      const conditions = [];
+      const params = [];
+      if (filters) {
+        if (filters.subject_id) { conditions.push("subject_id = ?"); params.push(Number(filters.subject_id)); }
+        if (filters.grade) { conditions.push("grade = ?"); params.push(Number(filters.grade)); }
+        if (filters.chapter) { conditions.push("chapter = ?"); params.push(filters.chapter); }
+        if (filters.topic_name) { conditions.push("topic_name = ?"); params.push(filters.topic_name); }
+        if (filters.level) { conditions.push("level = ?"); params.push(filters.level); }
+      }
+
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+      
+      const [result] = await db.query(`DELETE FROM subject_quiz_bank ${whereClause}`, params);
+      
+      await auditLog(db, {
+        ...actorFromReq(req),
+        action: "DELETE_BULK", entity: "question_bank", entity_id: "multiple",
+        meta: { deleted_count: result.affectedRows, filters, delete_all: true }, req,
+      });
+
+      return res.json({ ok: true, deleted_count: result.affectedRows });
+    } else if (Array.isArray(question_ids) && question_ids.length > 0) {
+      // Create ?,?,? placeholders for IN clause
+      const placeholders = question_ids.map(() => "?").join(",");
+      const [result] = await db.query(`DELETE FROM subject_quiz_bank WHERE id IN (${placeholders})`, question_ids);
+      
+      await auditLog(db, {
+        ...actorFromReq(req),
+        action: "DELETE_BULK", entity: "question_bank", entity_id: "multiple",
+        meta: { deleted_count: result.affectedRows, question_ids }, req,
+      });
+
+      return res.json({ ok: true, deleted_count: result.affectedRows });
+    } else {
+      return res.status(400).json({ error: "Provide either a non-empty question_ids array or delete_all flag." });
+    }
+  } catch (err) {
+    console.error("DELETE /api/subjects/question-bank/bulk error:", err);
+    return res.status(500).json({ error: String(err.message) });
+  }
+}
+
