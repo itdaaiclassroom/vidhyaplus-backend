@@ -3299,13 +3299,13 @@ app.put("/api/live-session/:id/end", async (req, res) => {
   try {
     liveQuizCheckpoint("PUT /api/live-session/:id/end", { liveSessionId: id });
 
-    // Mark the associated topic as completed
-    const [sessionRows] = await db.query("SELECT topic_id FROM live_sessions WHERE id = ?", [id]);
-    const topicId = sessionRows && sessionRows[0] ? sessionRows[0].topic_id : null;
-    if (topicId) {
-      await db.query("UPDATE topics SET status = 'completed' WHERE id = ?", [topicId]);
-      liveQuizCheckpoint("PUT /api/live-session/:id/end:topic_completed", { topicId });
-    }
+    // Mark the associated topic as completed (REMOVED: this mutates global topic status instead of per-teacher)
+    // const [sessionRows] = await db.query("SELECT topic_id FROM live_sessions WHERE id = ?", [id]);
+    // const topicId = sessionRows && sessionRows[0] ? sessionRows[0].topic_id : null;
+    // if (topicId) {
+    //   await db.query("UPDATE topics SET status = 'completed' WHERE id = ?", [topicId]);
+    //   liveQuizCheckpoint("PUT /api/live-session/:id/end:topic_completed", { topicId });
+    // }
 
     await db.query(
       `UPDATE live_sessions SET status = 'ended', attendance_marked = 1, quiz_submitted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,

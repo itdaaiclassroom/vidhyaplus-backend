@@ -31,6 +31,13 @@ export async function registerTeacherByPrincipal(req, res) {
   }
   const db = getPool();
   try {
+    // Check if email already exists in teachers or students
+    const [teacherExist] = await db.query("SELECT id FROM teachers WHERE email = ? LIMIT 1", [email]);
+    const [studentExist] = await db.query("SELECT id FROM students WHERE email = ? LIMIT 1", [email]);
+    if (teacherExist.length > 0 || studentExist.length > 0) {
+      return res.status(400).json({ error: "This email is already registered in the system." });
+    }
+
     const [result] = await db.query(
       "INSERT INTO teachers (school_id, full_name, email, password, role) VALUES (?, ?, ?, ?, 'teacher')",
       [Number(school_id), full_name, email, password]
@@ -56,7 +63,7 @@ export async function registerTeacherByPrincipal(req, res) {
 
 export async function registerStudentByPrincipal(req, res) {
   const { 
-    school_id, section_id, roll_no, first_name, last_name, category, joined_at, profile_image_path,
+    school_id, section_id, roll_no, first_name, last_name, email, password, category, joined_at, profile_image_path,
     gender, dob, father_name, mother_name, phone, phone_number, aadhaar,
     address, village, mandal, district, state, pincode, is_hosteller, disabilities
   } = req.body;
@@ -65,17 +72,28 @@ export async function registerStudentByPrincipal(req, res) {
   }
   const db = getPool();
   try {
+    // Check if email already exists in teachers or students
+    if (email && email.trim()) {
+      const [teacherExist] = await db.query("SELECT id FROM teachers WHERE email = ? LIMIT 1", [email.trim()]);
+      const [studentExist] = await db.query("SELECT id FROM students WHERE email = ? LIMIT 1", [email.trim()]);
+      if (teacherExist.length > 0 || studentExist.length > 0) {
+        return res.status(400).json({ error: "This email is already registered in the system." });
+      }
+    }
+
     const [result] = await db.query(
       `INSERT INTO students (
-        school_id, section_id, roll_no, first_name, last_name, category, joined_at, profile_image_path,
+        school_id, section_id, roll_no, first_name, last_name, email, password, category, joined_at, profile_image_path,
         gender, dob, father_name, mother_name, phone_number, aadhaar, address, village, mandal, district, state, pincode, is_hosteller, disabilities
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         Number(school_id), 
         Number(section_id), 
         roll_no || null,
         first_name, 
         last_name, 
+        email ? email.trim() : null,
+        password || null,
         category || 'General', 
         joined_at || new Date().toISOString().slice(0, 10),
         profile_image_path || null,
