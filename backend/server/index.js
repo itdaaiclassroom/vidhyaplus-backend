@@ -22,7 +22,7 @@ import schoolRoutes from "./routes/school.routes.js";
 import adminManagementRoutes from "./routes/admin.routes.js";
 import subjectRoutes from "./routes/subject.routes.js";
 import gatingRoutes from "./routes/gating.routes.js";
-
+import reportcardRoutes from "./routes/reportcard.routes.js";
 import http from "http";
 import { createWorkers } from "./mediasoup.js";
 import { setupSignaling } from "./signaling.js";
@@ -63,7 +63,7 @@ app.use("/api/schools", schoolRoutes);
 app.use("/api/admin", adminManagementRoutes);
 app.use("/api/subjects", subjectRoutes);
 app.use("/api/chapter-gating", gatingRoutes);
-
+app.use("/api/reportcard", reportcardRoutes);
 // AI Proxy Routes
 app.post("/api/ai/ask", async (req, res) => {
   try {
@@ -3518,6 +3518,41 @@ app.post("/api/student-marks", async (req, res) => {
         ? [sid, cid, atype, Math.min(sc, tot), tot, dateStr, lqid]
         : [sid, cid, atype, Math.min(sc, tot), tot, dateStr]
     );
+
+    // Propagate changes to student_exam_marks and update performance summary if this is an exam type
+    try {
+      const [chapRows] = await db.query("SELECT subject_id FROM chapters WHERE id = ? LIMIT 1", [cid]);
+      const subjectId = chapRows && chapRows[0] ? chapRows[0].subject_id : null;
+      if (subjectId) {
+        const examType = atype.toUpperCase();
+        const validExamTypes = ['FA1', 'FA2', 'FA3', 'FA4', 'SA1', 'SA2', 'QUIZ'];
+        if (validExamTypes.includes(examType)) {
+          const academicYear = "2024-25";
+          const [existing] = await db.query(
+            "SELECT id FROM student_exam_marks WHERE student_id = ? AND subject_id = ? AND exam_type = ? AND academic_year = ? LIMIT 1",
+            [sid, subjectId, examType, academicYear]
+          );
+          if (existing && existing[0]) {
+            await db.query(
+              "UPDATE student_exam_marks SET marks_obtained = ?, max_marks = ? WHERE id = ?",
+              [Math.min(sc, tot), tot, existing[0].id]
+            );
+          } else {
+            await db.query(
+              "INSERT INTO student_exam_marks (student_id, subject_id, exam_type, marks_obtained, max_marks, academic_year) VALUES (?, ?, ?, ?, ?, ?)",
+              [sid, subjectId, examType, Math.min(sc, tot), tot, academicYear]
+            );
+          }
+          
+          // Dynamically import reportcard service to update performance summary
+          const reportCardService = await import("./services/reportcard.service.js");
+          await reportCardService.updatePerformanceSummary(sid);
+        }
+      }
+    } catch (syncErr) {
+      console.error("Error syncing marks to exam marks or updating summary:", syncErr);
+    }
+
     res.json({ ok: true, id: r.insertId, studentId: sid, chapterId: cid, score: sc, total: tot, assessedOn: dateStr, liveQuizSessionId: lqid || null });
   } catch (err) {
     console.error("POST /api/student-marks error:", err);
