@@ -3498,7 +3498,7 @@ app.post("/api/ai/ask", async (req, res) => {
 // Chapter-level marks (feeds studentQuizResults on GET /api/all)
 app.post("/api/student-marks", async (req, res) => {
   const db = getPool();
-  const { studentId, chapterId, score, total, assessedOn, assessmentType, liveQuizSessionId } = req.body || {};
+  const { studentId, chapterId, score, total, assessedOn, assessmentType, liveQuizSessionId, subjectId: payloadSubjectId } = req.body || {};
   const sid = Number(studentId);
   const cid = Number(chapterId);
   const sc = Number(score);
@@ -3521,8 +3521,11 @@ app.post("/api/student-marks", async (req, res) => {
 
     // Propagate changes to student_exam_marks and update performance summary if this is an exam type
     try {
-      const [chapRows] = await db.query("SELECT subject_id FROM chapters WHERE id = ? LIMIT 1", [cid]);
-      const subjectId = chapRows && chapRows[0] ? chapRows[0].subject_id : null;
+      let subjectId = payloadSubjectId ? Number(payloadSubjectId) : null;
+      if (!subjectId) {
+        const [chapRows] = await db.query("SELECT subject_id FROM chapters WHERE id = ? LIMIT 1", [cid]);
+        subjectId = chapRows && chapRows[0] ? chapRows[0].subject_id : null;
+      }
       if (subjectId) {
         const examType = atype.toUpperCase();
         const validExamTypes = ['FA1', 'FA2', 'FA3', 'FA4', 'SA1', 'SA2', 'QUIZ'];
