@@ -2144,12 +2144,20 @@ app.post("/api/live-quiz", async (req, res) => {
   if (!teacherId || !classId || !chapterId || !topicId || !topicName || !subjectId) {
     return res.status(400).json({ error: "teacherId, classId, chapterId, topicId, topicName, subjectId are required" });
   }
-  // Read admin-configured question count from gating_config (default: 10)
+  // Read admin-configured question count from chapter_assessment_config (or student_quiz_question_count)
   let adminQuestionCount = 10;
   try {
-    const [cfgRows] = await db.query("SELECT config_value FROM gating_config WHERE config_key = 'assessment_question_count' LIMIT 1");
-    if (cfgRows && cfgRows[0]) adminQuestionCount = parseInt(cfgRows[0].config_value) || 10;
-  } catch (_) { /* gating_config may not exist yet */ }
+    const [chapterCfg] = await db.query(
+      "SELECT question_count FROM chapter_assessment_config WHERE chapter_id = ? LIMIT 1",
+      [chapterId]
+    );
+    if (chapterCfg.length > 0 && chapterCfg[0].question_count) {
+      adminQuestionCount = parseInt(chapterCfg[0].question_count) || 10;
+    } else {
+      const [cfgRows] = await db.query("SELECT config_value FROM gating_config WHERE config_key = 'student_quiz_question_count' LIMIT 1");
+      if (cfgRows && cfgRows[0]) adminQuestionCount = parseInt(cfgRows[0].config_value) || 10;
+    }
+  } catch (_) { /* tables may not exist yet */ }
   const numQuestionsToCreate = noOfQuestions ? Math.min(Math.max(Number(noOfQuestions), 1), adminQuestionCount) : adminQuestionCount;
   try {
     liveQuizCheckpoint("POST /api/live-quiz:request", { teacherId, classId, subjectId, topicId, liveSessionId });
