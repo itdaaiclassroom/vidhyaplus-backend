@@ -71,20 +71,7 @@ export async function getChapterGatingStatus(req, res) {
       [teacher_id, chapterIds]
     );
 
-    // Fetch per-chapter assessment configurations (passing marks, total marks)
-    const [chapterConfigs] = await db.query(
-      "SELECT chapter_id, total_marks, passing_marks FROM chapter_assessment_config WHERE chapter_id IN (?)",
-      [chapterIds]
-    );
     const configMap = {};
-    chapterConfigs.forEach(c => {
-      configMap[c.chapter_id] = {
-        totalMarks: c.total_marks,
-        passingMarks: c.passing_marks,
-        // Calculate effective passing percentage for UI
-        passPercentage: c.total_marks > 0 ? (c.passing_marks / c.total_marks) * 100 : teacherPassPct
-      };
-    });
 
     const assessmentMap = {};
     assessments.forEach((a) => {
@@ -238,8 +225,6 @@ export async function getChapterGatingStatus(req, res) {
         if (!assessmentAvailable) isLocked = true;
       }
 
-      const chConfig = configMap[chId] || { passPercentage: teacherPassPct };
-
       result.push({
         chapterId: chId,
         chapterNo: ch.chapter_no,
@@ -249,7 +234,7 @@ export async function getChapterGatingStatus(req, res) {
         teacherPassed: assess.passed,
         teacherBestScore: assess.bestScore,
         teacherAttempts: assess.attempts,
-        teacherPassThreshold: chConfig.passPercentage, // Use chapter-specific threshold if available
+        teacherPassThreshold: teacherPassPct, // Use global threshold for teachers
         studentAvgScore: perf.avgScore,
         studentPassPercentage: perf.passPercentage,
         studentThresholdMet: perf.thresholdMet,
@@ -287,27 +272,12 @@ export async function getAssessmentQuestions(req, res) {
     const { chapterId } = req.params;
     if (!chapterId) return res.status(400).json({ error: "Missing chapterId" });
 
-    // Read per-chapter assessment settings first, then fall back to global config
-    let questionCount, totalMarks, passingMarks;
-    try {
-      const [chapterCfg] = await db.query(
-        "SELECT question_count, total_marks, passing_marks FROM chapter_assessment_config WHERE chapter_id = ? LIMIT 1",
-        [chapterId]
-      );
-      if (chapterCfg.length > 0) {
-        questionCount = chapterCfg[0].question_count;
-        totalMarks = chapterCfg[0].total_marks;
-        passingMarks = chapterCfg[0].passing_marks;
-      }
-    } catch (_) { /* table may not exist yet */ }
-    // Fall back to global config
-    if (!questionCount) questionCount = parseInt(await getConfigValue(db, "assessment_question_count", "10")) || 10;
-    if (!totalMarks) totalMarks = parseInt(await getConfigValue(db, "assessment_total_marks", "100")) || 100;
+    // Use global Assessment Config for teacher quiz
+    let questionCount = parseInt(await getConfigValue(db, "assessment_question_count", "10")) || 10;
+    let totalMarks = parseInt(await getConfigValue(db, "assessment_total_marks", "100")) || 100;
     
     const teacherPassPct = parseFloat(await getConfigValue(db, "teacher_pass_percentage", "70"));
-    if (!passingMarks) {
-      passingMarks = (teacherPassPct / 100) * totalMarks;
-    }
+    let passingMarks = (teacherPassPct / 100) * totalMarks;
 
     // Get chapter info
     const [chapterRows] = await db.query(
@@ -425,26 +395,9 @@ export async function submitAssessment(req, res) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Read per-chapter assessment settings first, then fall back to global config
-    let totalMarks, passingMarks;
-    try {
-      const [chapterCfg] = await db.query(
-        "SELECT total_marks, passing_marks FROM chapter_assessment_config WHERE chapter_id = ? LIMIT 1",
-        [chapterId]
-      );
-      if (chapterCfg.length > 0) {
-        totalMarks = chapterCfg[0].total_marks;
-        passingMarks = chapterCfg[0].passing_marks;
-      }
-    } catch (_) { /* table may not exist yet */ }
-    // Fall back to global config
-    if (!totalMarks) totalMarks = parseInt(await getConfigValue(db, "assessment_total_marks", "100")) || 100;
-    
-    // Prioritize teacher_pass_percentage (calculated against totalMarks) over the static assessment_passing_marks
+    let totalMarks = parseInt(await getConfigValue(db, "assessment_total_marks", "100")) || 100;
     const teacherPassPct = parseFloat(await getConfigValue(db, "teacher_pass_percentage", "70"));
-    if (!passingMarks) {
-      passingMarks = (teacherPassPct / 100) * totalMarks;
-    }
+    let passingMarks = (teacherPassPct / 100) * totalMarks;
 
     // Grade the assessment
     let correct = 0;
