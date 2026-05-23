@@ -3592,6 +3592,162 @@ app.get("/api/student-marks", async (req, res) => {
   }
 });
 
+/**
+ * POST /api/subjects/:subjectId/grades/:gradeId/extract-textbook
+ * AI-powered full textbook PDF → auto-insert chapters + topics into MySQL.
+ *
+ * Body: { pdf_url: string }  — a publicly accessible URL (Cloudflare R2 or server upload)
+ *
+ * Flow:
+ *   1. Validate subject exists
+ *   2. Call Python FastAPI /extract_textbook with the R2/public URL
+ *   3. INSERT chapters + topics in a SQL transaction (rollback on failure)
+ *   4. Return { ok, chapters_loaded, topics_loaded }
+ */
+app.post("/api/subjects/:subjectId/grades/:gradeId/extract-textbook", async (req, res) => {
+  const db = getPool();
+  const subjectId = Number(req.params.subjectId);
+  const gradeId = Number(req.params.gradeId);
+  const { pdf_url } = req.body || {};
+
+  if (!subjectId || !gradeId) {
+    return res.status(400).json({ error: "subjectId and gradeId are required" });
+  }
+  if (!pdf_url || typeof pdf_url !== "string" || !pdf_url.trim()) {
+    return res.status(400).json({ error: "pdf_url is required" });
+  }
+
+  try {
+    // 1. Fetch subject name for the AI prompt
+    const [subjRows] = await db.query("SELECT subject_name FROM subjects WHERE id = ? LIMIT 1", [subjectId]);
+    if (!subjRows || !subjRows[0]) {
+      return res.status(404).json({ error: `Subject with id ${subjectId} not found` });
+    }
+    const subjectName = subjRows[0].subject_name || "General";
+
+    console.log(`[extract-textbook] Starting AI extraction for subject="${subjectName}" grade=${gradeId} url=${pdf_url}`);
+
+    // 2. Resolve the PDF path for Python:
+    //    - If R2 is configured → pdf_url is a full https:// URL (Python downloads it directly)
+    //    - If local fallback   → pdf_url starts with /uploads/ → convert to absolute local path
+    const resolvedPdfPath = pdf_url.trim().startsWith("/uploads/")
+      ? path.join(process.cwd(), pdf_url.trim().replace(/^\//, ""))
+      : pdf_url.trim();
+    console.log(`[extract-textbook] Resolved pdf_path for AI: ${resolvedPdfPath}`);
+
+    // 3. Call the Python FastAPI AI segmentation service
+    const aiServiceUrl = process.env.VITE_AI_API_URL || "http://localhost:8001";
+    let aiResponseData;
+    try {
+      const aiRes = await fetch(`${aiServiceUrl}/extract_textbook`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pdf_path: resolvedPdfPath,
+          subject: subjectName,
+          grade: gradeId,
+          max_chapters: 30,
+          max_pages_per_chapter: 40,
+        }),
+      });
+      if (!aiRes.ok) {
+        const aiErr = await aiRes.text().catch(() => aiRes.statusText);
+        throw new Error(`AI service responded with HTTP ${aiRes.status}: ${aiErr}`);
+      }
+      aiResponseData = await aiRes.json();
+    } catch (aiErr) {
+      console.error("[extract-textbook] AI service call failed:", aiErr.message);
+      return res.status(502).json({
+        error: `AI segmentation service is unavailable. Please ensure the Python AI service is running at ${aiServiceUrl}. Details: ${aiErr.message}`,
+      });
+    }
+
+    const chapters = Array.isArray(aiResponseData?.chapters) ? aiResponseData.chapters : [];
+    if (chapters.length === 0) {
+      return res.status(422).json({
+        error: "AI extraction returned no chapters. The PDF may be image-based (scanned), corrupted, or not a valid textbook PDF.",
+      });
+    }
+
+    console.log(`[extract-textbook] AI returned ${chapters.length} chapters. Starting DB transaction...`);
+
+    // 3. Insert chapters + topics in a single atomic transaction
+    await db.query("START TRANSACTION");
+    let chaptersInserted = 0;
+    let topicsInserted = 0;
+
+    try {
+      for (let i = 0; i < chapters.length; i++) {
+        const ch = chapters[i];
+        const chapterName = (ch.chapter_name || `Chapter ${i + 1}`).trim();
+        const chapterNo = i + 1;
+
+        // Insert chapter row
+        const [chapterResult] = await db.query(
+          `INSERT INTO chapters (subject_id, grade_id, chapter_name, chapter_no, macro_month_label, teaching_plan_summary)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            subjectId,
+            gradeId,
+            chapterName,
+            chapterNo,
+            "June", // Default month — admin can customise later
+            ch.learning_intent || null,
+          ]
+        );
+        const chapterId = chapterResult.insertId;
+        chaptersInserted++;
+
+        // Link the full textbook PDF to this chapter (for the AI Auto-Workflow button in TeacherDashboard)
+        await db.query(
+          `INSERT INTO chapter_textual_materials (chapter_id, pdf_url, title)
+           VALUES (?, ?, ?)
+           ON DUPLICATE KEY UPDATE pdf_url = VALUES(pdf_url), title = VALUES(title)`,
+          [chapterId, pdf_url.trim(), `${chapterName} — Textbook`]
+        ).catch(async () => {
+          // Fallback if UNIQUE constraint doesn't allow ON DUPLICATE KEY
+          await db.query(
+            "INSERT INTO chapter_textual_materials (chapter_id, pdf_url, title) VALUES (?, ?, ?)",
+            [chapterId, pdf_url.trim(), `${chapterName} — Textbook`]
+          );
+        });
+
+        // Insert topics for this chapter
+        const topicList = Array.isArray(ch.topics) ? ch.topics : [];
+        for (let j = 0; j < topicList.length; j++) {
+          const topic = topicList[j];
+          const topicName = (topic.topic_name || topic.name || `Topic ${j + 1}`).trim();
+          await db.query(
+            `INSERT INTO topics (chapter_id, name, order_num, status)
+             VALUES (?, ?, ?, 'not_started')`,
+            [chapterId, topicName, j + 1]
+          );
+          topicsInserted++;
+        }
+      }
+
+      await db.query("COMMIT");
+      console.log(`[extract-textbook] ✅ Committed: ${chaptersInserted} chapters, ${topicsInserted} topics for subject=${subjectId} grade=${gradeId}`);
+
+      return res.status(201).json({
+        ok: true,
+        chapters_loaded: chaptersInserted,
+        topics_loaded: topicsInserted,
+        book_title: aiResponseData.book_title || "Textbook",
+        subject: subjectName,
+        grade: gradeId,
+      });
+    } catch (dbErr) {
+      await db.query("ROLLBACK");
+      console.error("[extract-textbook] DB transaction failed, rolled back:", dbErr.message);
+      throw dbErr;
+    }
+  } catch (err) {
+    console.error("[extract-textbook] Unhandled error:", err.message);
+    return res.status(500).json({ error: String(err.message) });
+  }
+});
+
 // Admin: set or upload chapter textbook (replaces existing)
 // Admin: set or upload chapter textbook (replaces existing). Pass either path or { file: base64, filename }.
 app.put("/api/chapters/:id/textbook", async (req, res) => {
