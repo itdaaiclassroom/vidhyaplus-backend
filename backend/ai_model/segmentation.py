@@ -43,6 +43,7 @@ class TopicSegment(BaseModel):
     name: str
     summary: str
     order_num: int
+    subtopics: List[str] = []
 
 
 class ChapterResult(BaseModel):
@@ -51,6 +52,25 @@ class ChapterResult(BaseModel):
     start_page: int
     end_page: int
     topics: List[TopicSegment]
+
+
+class SubTopicStructure(BaseModel):
+    topic_name: str
+    subtopics: List[str] = []
+
+
+class ChapterStructure(BaseModel):
+    chapter_name: str
+    learning_intent: str
+    core_concepts: List[str] = []
+    topics: List[SubTopicStructure] = []
+
+
+class TextbookStructureResponse(BaseModel):
+    book_title: str
+    subject: str
+    grade: str
+    chapters: List[ChapterStructure] = []
 
 
 # ─────────────────────────────────────────────
@@ -279,6 +299,190 @@ def _rule_based_topics(text: str, subject: str, grade: int) -> List[TopicSegment
     return topics
 
 
+def _clean_chapter_name(raw_name: str) -> str:
+    """Clean chapter name by removing prefixes like 'Chapter 1:', 'Unit 3 -', etc."""
+    cleaned = re.sub(r'^(chapter\s+[xivlcdm\d]+|chapter\s+\d+|unit\s+[xivlcdm\d]+|unit\s+\d+|lesson\s+\d+|module\s+\d+|\d+\.?)\s*[:-]?\s*', '', raw_name, flags=re.IGNORECASE)
+    cleaned = cleaned.strip(" \t\r\n-•*\"':")
+    if not cleaned:
+        return raw_name
+    return cleaned
+
+
+def _parse_json_safely(raw: str) -> Optional[dict]:
+    """Safely extracts and parses JSON from raw LLM output."""
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1:
+        cleaned = cleaned[start:end+1]
+        
+    try:
+        import json
+        return json.loads(cleaned)
+    except Exception as e:
+        print(f"[segmentation] JSON parsing error: {e}")
+        return None
+
+
+def _fallback_chapter_structure(text: str, chapter_name: str, subject: str, grade: int) -> dict:
+    """Generate high-quality structure dynamically if the LLM is offline."""
+    clean_name = _clean_chapter_name(chapter_name)
+    
+    headings = []
+    seen = set()
+    for line in text.split("\n"):
+        line = line.strip()
+        if 10 < len(line) < 70 and not _TOPIC_NOISE.search(line) and _is_academic_heading(line):
+            key = line.lower()[:50]
+            if key not in seen:
+                seen.add(key)
+                headings.append(line)
+    
+    core_concepts = headings[:8] if len(headings) >= 3 else [
+        f"Introduction to {clean_name}",
+        f"Fundamental Principles of {clean_name}",
+        f"Practical Applications of {clean_name}",
+        f"Summary and Analytical Review"
+    ]
+    
+    topics_list = []
+    if len(headings) >= 2:
+        current_topic = None
+        for h in headings:
+            h_clean = re.sub(r'^(\d+\.\d+|\d+\.\s+|[-•*]\s+)', '', h).strip()
+            if not current_topic or len(current_topic["subtopics"]) >= 3:
+                current_topic = {
+                    "topic_name": h_clean,
+                    "subtopics": []
+                }
+                topics_list.append(current_topic)
+            else:
+                current_topic["subtopics"].append(h_clean)
+    else:
+        topics_list = [
+            {
+                "topic_name": f"Overview of {clean_name}",
+                "subtopics": [f"Basic Concepts of {clean_name}", f"Key Terminology in {clean_name}"]
+            },
+            {
+                "topic_name": f"Core Theories of {clean_name}",
+                "subtopics": ["Theoretical Explanations", "Illustrations and Examples"]
+            },
+            {
+                "topic_name": f"Practical Applications",
+                "subtopics": ["Real-world Scenarios", "Summary and Chapter Review"]
+            }
+        ]
+        
+    return {
+        "chapter_name": clean_name,
+        "learning_intent": f"Understand the core elements, definitions, and experimental contexts of {clean_name} tailored for Grade {grade} {subject}.",
+        "core_concepts": core_concepts,
+        "topics": topics_list
+    }
+
+
+def _extract_semantic_structure_for_chapter(
+    text: str,
+    chapter_name: str,
+    subject: str,
+    grade: int,
+) -> dict:
+    """
+    Given the raw text of one chapter, ask Ollama to extract the rich hierarchical curriculum structure.
+    Falls back to dynamic rule-based extraction if Ollama is unavailable.
+    """
+    text_slice = text[:3000].strip()
+    clean_name = _clean_chapter_name(chapter_name)
+
+    if not text_slice:
+        return _fallback_chapter_structure(text, clean_name, subject, grade)
+
+    prompt = f"""You are an expert Educational Content Structuring AI specializing in textbook analysis.
+Analyze the following textbook text for the chapter "{clean_name}" (Subject: {subject}, Grade: {grade}).
+
+Extract the hierarchical curriculum structure strictly according to these steps:
+1. Identify the core "learning_intent" of this chapter (a concise educational summary of what students will learn).
+2. Extract 3-15 major "core_concepts" (key academic concepts that represent what students learn).
+3. Discover the main "topics" covered. For each topic, list its specific "subtopics" (sub-sections, definitions, or themes under it).
+4. Perform OCR error correction (e.g. clean up spelling errors, merge broken line headings).
+5. Ignore noise (copyright, page numbers, app scan instructions, exercises/worksheets, publisher notes).
+
+Output ONLY a valid JSON object in this exact format. Do not add any markdown formatting, comments, or extra text:
+{{
+  "chapter_name": "{clean_name}",
+  "learning_intent": "A concise statement of what students are learning",
+  "core_concepts": ["concept 1", "concept 2", "concept 3"],
+  "topics": [
+    {{
+      "topic_name": "Main Topic A",
+      "subtopics": ["Subtopic A1", "Subtopic A2"]
+    }}
+  ]
+}}
+
+Chapter Text:
+{text_slice}
+
+JSON:"""
+
+    raw = _call_ollama_safe(prompt)
+    if raw:
+        parsed = _parse_json_safely(raw)
+        if parsed and "chapter_name" in parsed and "topics" in parsed:
+            parsed["chapter_name"] = _clean_chapter_name(parsed.get("chapter_name", clean_name))
+            valid_topics = []
+            for t in parsed.get("topics", []):
+                if isinstance(t, dict) and "topic_name" in t:
+                    topic_name = t.get("topic_name", "").strip()
+                    subtopics = [str(st).strip() for st in t.get("subtopics", []) if st]
+                    if topic_name:
+                        valid_topics.append({
+                            "topic_name": topic_name,
+                            "subtopics": subtopics
+                        })
+            parsed["topics"] = valid_topics
+            if parsed["topics"]:
+                return parsed
+
+    # Fallback to tiny local LLM
+    try:
+        from chatbot import llm, llm_task
+        if llm and llm_task == "text-generation":
+            res = llm(prompt, max_new_tokens=400, temperature=0.3, do_sample=True)
+            raw2 = res[0].get("generated_text", "") if res else ""
+            parsed2 = _parse_json_safely(raw2)
+            if parsed2 and "chapter_name" in parsed2 and "topics" in parsed2:
+                parsed2["chapter_name"] = _clean_chapter_name(parsed2.get("chapter_name", clean_name))
+                valid_topics2 = []
+                for t in parsed2.get("topics", []):
+                    if isinstance(t, dict) and "topic_name" in t:
+                        topic_name = t.get("topic_name", "").strip()
+                        subtopics = [str(st).strip() for st in t.get("subtopics", []) if st]
+                        if topic_name:
+                            valid_topics2.append({
+                                "topic_name": topic_name,
+                                "subtopics": subtopics
+                            })
+                parsed2["topics"] = valid_topics2
+                if parsed2["topics"]:
+                    return parsed2
+    except Exception:
+        pass
+
+    return _fallback_chapter_structure(text, clean_name, subject, grade)
+
+
 def _extract_topics_for_chapter(
     text: str,
     chapter_name: str,
@@ -286,55 +490,26 @@ def _extract_topics_for_chapter(
     grade: int,
 ) -> List[TopicSegment]:
     """
-    Given the raw text of one chapter, ask Ollama to extract topics.
-    Falls back to rule-based extraction if Ollama is unavailable.
+    Keeps backwards compatibility for single chapter segmentation.
+    Extracts the rich structure and converts it into a list of TopicSegments for Express.
     """
-    # Limit text sent to AI to avoid token overflow (Ollama handles ~2000 chars well)
-    text_slice = text[:2500].strip()
-
-    if not text_slice:
-        return _rule_based_topics(text, subject, grade)
-
-    prompt = f"""You are an expert curriculum designer for Grade {grade} {subject}.
-
-Read the following chapter text from "{chapter_name}".
-List ONLY the real academic sub-topics taught in this chapter.
-
-IMPORTANT - Ignore completely:
-- QR code instructions, app installation steps
-- Publisher names (SCERT, Government, Telangana)
-- Page headers, page numbers, class/subject titles
-- Copyright notices, how-to-use sections
-
-Output ONLY real academic topics in this exact format, one per line:
-Topic: [Topic Title] | Summary: [One sentence description of what students learn]
-
-Chapter Text:
-{text_slice}
-
-Topics:"""
-
-    raw = _call_ollama_safe(prompt)
-
-    if raw:
-        topics = _parse_topics(raw, subject, grade)
-        if topics:
-            return topics
-
-    # Fallback: try tiny local LLM
-    try:
-        from chatbot import llm, llm_task
-        if llm and llm_task == "text-generation":
-            res = llm(prompt, max_new_tokens=300, temperature=0.3, do_sample=True)
-            raw2 = res[0].get("generated_text", "") if res else ""
-            topics2 = _parse_topics(raw2, subject, grade)
-            if topics2:
-                return topics2
-    except Exception:
-        pass
-
-    # Final fallback: pure rule-based
-    return _rule_based_topics(text, subject, grade)
+    struct = _extract_semantic_structure_for_chapter(text, chapter_name, subject, grade)
+    
+    topics: List[TopicSegment] = []
+    order = 1
+    for t in struct.get("topics", []):
+        topic_name = t.get("topic_name")
+        subtopics = t.get("subtopics", [])
+        summary = f"Focuses on {', '.join(subtopics[:3])}." if subtopics else f"Study of {topic_name}."
+        topics.append(TopicSegment(
+            name=topic_name,
+            summary=summary,
+            order_num=order,
+            subtopics=subtopics
+        ))
+        order += 1
+        
+    return topics
 
 
 # ─────────────────────────────────────────────
@@ -517,14 +692,37 @@ async def segment_chapter(request: Request):
         if not text.strip():
             raise HTTPException(400, "Could not extract text. Ensure it's a text-based PDF, not a scanned image.")
 
-        topics = _extract_topics_for_chapter(
+        struct = _extract_semantic_structure_for_chapter(
             text=text,
             chapter_name=chapter_name,
             subject=subject,
             grade=grade,
         )
+
+        # Build backward-compatible flat topics list for Express
+        compat_topics = []
+        order = 1
+        for t in struct.get("topics", []):
+            compat_topics.append({
+                "name": t.get("topic_name", ""),
+                "summary": f"Focuses on {', '.join(t.get('subtopics', [])[:3])}." if t.get("subtopics") else f"Study of {t.get('topic_name')}.",
+                "order_num": order,
+                "subtopics": t.get("subtopics", [])
+            })
+            order += 1
+
         return {
-            "topics": [t.model_dump() for t in topics],
+            "book_title": chapter_name,
+            "subject": subject,
+            "grade": str(grade),
+            "chapters": [{
+                "chapter_name": struct.get("chapter_name", _clean_chapter_name(chapter_name)),
+                "learning_intent": struct.get("learning_intent", ""),
+                "core_concepts": struct.get("core_concepts", []),
+                "topics": struct.get("topics", [])
+            }],
+            # Backwards compatibility key for the Express dashboard auto-workflow
+            "topics": compat_topics,
             "total_pages": total_pages,
             "pages_analyzed": total_pages - start_page,
         }
@@ -625,8 +823,17 @@ async def extract_textbook(request: Request):
         # ── Step 2: Build page ranges ──────────────────────────────────────
         chapters_with_ranges = _build_chapter_page_ranges(raw_chapters, total_pages)
 
+        # Extract book title from filename or metadata
+        book_title = "Textbook"
+        if "multipart/form-data" in content_type:
+            if file and file.filename:
+                book_title = file.filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").title()
+        else:
+            if pdf_path:
+                book_title = pdf_path.rstrip("/").split("/")[-1].replace("%20", " ").split(".")[0].replace("_", " ").replace("-", " ").title()
+
         # ── Step 3: Extract topics per chapter ────────────────────────────
-        results: List[ChapterResult] = []
+        chapters_data = []
         for i, ch in enumerate(chapters_with_ranges):
             chapter_text = _extract_chapter_text(
                 reader,
@@ -634,25 +841,24 @@ async def extract_textbook(request: Request):
                 ch["end_page"],
                 max_pages_per_chapter,
             )
-            topics = _extract_topics_for_chapter(
+            struct = _extract_semantic_structure_for_chapter(
                 text=chapter_text,
                 chapter_name=ch["chapter_name"],
                 subject=subject,
                 grade=grade,
             )
-            results.append(ChapterResult(
-                chapter_num=i + 1,
-                chapter_name=ch["chapter_name"],
-                start_page=ch["start_page"] + 1,
-                end_page=ch["end_page"] + 1,
-                topics=topics,
-            ))
+            chapters_data.append({
+                "chapter_name": struct.get("chapter_name", _clean_chapter_name(ch["chapter_name"])),
+                "learning_intent": struct.get("learning_intent", ""),
+                "core_concepts": struct.get("core_concepts", []),
+                "topics": struct.get("topics", [])
+            })
 
         return {
-            "total_pages": total_pages,
-            "total_chapters": len(results),
-            "detection_method": detection_method,
-            "chapters": [r.model_dump() for r in results],
+            "book_title": book_title,
+            "subject": subject,
+            "grade": str(grade),
+            "chapters": chapters_data
         }
 
     except HTTPException:
