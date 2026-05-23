@@ -9,61 +9,61 @@ import * as assetStorage from "../storage.js";
 export async function generateStudentQRIds(db, studentId) {
   const sid = Number(studentId);
   if (!sid) return [];
-  
+
   const [studentRows] = await db.query("SELECT roll_no, category FROM students WHERE id = ? LIMIT 1", [sid]);
   const student = studentRows && studentRows[0] ? studentRows[0] : null;
-  
+
   if (!student) return [];
-  
+
   const rollNo = String(student.roll_no || sid);
   const category = String(student.category || "A"); // Default to A if not set
-  
+
   const qrCodeId = `${rollNo}-${category}`;
-  
+
   const QR_TYPES = ["DATA", "A", "B", "C", "D"];
   const created = [];
-  
+
   for (const qrType of QR_TYPES) {
     // For now, we use the same ID for all types or distinguish if needed.
     // The requirement says "Each student will have a QR Code ID", implying one per student.
     // But the existing system has 5 types. I'll store the same ID or follow a similar pattern.
     // Given "Store only the QR Code IDs", I'll store the formatted ID.
-    
+
     const value = qrType === "DATA" ? qrCodeId : `stu${rollNo}_${qrType}`;
-    
+
     await db.query(
       "INSERT INTO student_qr_codes (student_id, qr_type, qr_code_value, qr_image_path) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE qr_code_value = VALUES(qr_code_value), qr_image_path = NULL",
       [sid, qrType, value, null]
     );
-    
+
     created.push({ qr_type: qrType, qr_code_value: value });
   }
-  
+
   return created;
 }
 
 export async function createStudent(req, res) {
   const db = getPool();
-  const { 
-    full_name, first_name, last_name, roll_no, section, school_id, section_id, grade_id, 
+  const {
+    full_name, first_name, last_name, roll_no, section, school_id, section_id, grade_id,
     joined_at, password, category, profile_image_path,
     gender, dob, father_name, mother_name, phone, phone_number, aadhaar,
     address, village, mandal, district, state, pincode, hostel_status, is_hosteller, disabilities
   } = req.body || {};
 
-  
+
   if (!school_id) {
     return res.status(400).json({ error: "school_id is required" });
   }
   if (!password || String(password).trim() === "") {
     return res.status(400).json({ error: "password is required for student login" });
   }
-  
+
   const passwordPlain = String(password).trim();
   try {
     const schoolIdNum = Number(school_id);
     let resolvedSectionId = section_id != null ? Number(section_id) : null;
-    
+
     if (!resolvedSectionId) {
       const sectionCode = section ? String(section).trim().toUpperCase() : "A";
       const gradeIdNum = grade_id != null ? Number(grade_id) : 10;
@@ -81,12 +81,12 @@ export async function createStudent(req, res) {
         resolvedSectionId = Number(insSec.insertId);
       }
     }
-    
+
     const fullName = String(full_name || "").trim();
     const firstNameResolved = String(first_name || (fullName.split(" ")[0] || "Student")).trim();
     const lastNameResolved = String(last_name || fullName.split(" ").slice(1).join(" ") || "Demo").trim();
     const studentCategory = category || "A";
-    
+
     const resolvedPhone = phone || phone_number || null;
     const resolvedIsHosteller = (hostel_status === 'Yes' || is_hosteller === true || is_hosteller === 1) ? 1 : 0;
 
@@ -96,13 +96,13 @@ export async function createStudent(req, res) {
         gender, dob, father_name, mother_name, phone_number, aadhaar, address, village, mandal, district, state, pincode, is_hosteller, disabilities
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        schoolIdNum, 
-        resolvedSectionId, 
-        firstNameResolved, 
-        lastNameResolved, 
+        schoolIdNum,
+        resolvedSectionId,
+        firstNameResolved,
+        lastNameResolved,
         roll_no || null,
-        passwordPlain, 
-        joined_at ? String(joined_at).slice(0, 10) : new Date().toISOString().slice(0, 10), 
+        passwordPlain,
+        joined_at ? String(joined_at).slice(0, 10) : new Date().toISOString().slice(0, 10),
         studentCategory,
         profile_image_path || null,
         gender || null,
@@ -121,20 +121,20 @@ export async function createStudent(req, res) {
         disabilities || null,
       ]
     );
-    
+
     const studentId = insertResult.insertId;
-    
+
     // Generate QR IDs (no images)
     try {
       await generateStudentQRIds(db, studentId);
     } catch (qrErr) {
       console.error("QR ID generation failed for student", studentId, qrErr.message);
     }
-    
-    res.status(201).json({ 
-      id: String(studentId), 
-      full_name: `${firstNameResolved} ${lastNameResolved}`.trim(), 
-      school_id: String(schoolIdNum), 
+
+    res.status(201).json({
+      id: String(studentId),
+      full_name: `${firstNameResolved} ${lastNameResolved}`.trim(),
+      school_id: String(schoolIdNum),
       section_id: String(resolvedSectionId),
       category: studentCategory,
       profile_image_url: profile_image_path ? assetStorage.getPublicUrl(profile_image_path) : null
@@ -148,13 +148,13 @@ export async function createStudent(req, res) {
 export async function updateStudent(req, res) {
   const db = getPool();
   const id = Number(req.params.id);
-  const { 
-    first_name, last_name, full_name, section_id, grade_id, school_id, 
-    password, category, profile_image_path, gender, dob, father_name, 
-    mother_name, phone, phone_number, aadhaar, address, village, mandal, 
-    district, state, pincode, is_hosteller, disabilities 
+  const {
+    first_name, last_name, full_name, section_id, grade_id, school_id,
+    password, category, profile_image_path, gender, dob, father_name,
+    mother_name, phone, phone_number, aadhaar, address, village, mandal,
+    district, state, pincode, is_hosteller, disabilities
   } = req.body || {};
-  
+
   if (!id) return res.status(400).json({ error: "id required" });
   console.log(`UPDATING STUDENT ID: ${id}`, req.body);
   try {
@@ -166,21 +166,21 @@ export async function updateStudent(req, res) {
 
     const updates = [];
     const values = [];
-    
+
     if (first_name !== undefined) { updates.push("first_name = ?"); values.push(String(first_name).trim()); }
     if (last_name !== undefined) { updates.push("last_name = ?"); values.push(String(last_name).trim()); }
-    
+
     if (section_id !== undefined) { updates.push("section_id = ?"); values.push(Number(section_id)); }
     if (category !== undefined) { updates.push("category = ?"); values.push(category); }
     if (gender !== undefined) { updates.push("gender = ?"); values.push(gender); }
     if (dob !== undefined) { updates.push("dob = ?"); values.push(dob); }
     if (father_name !== undefined) { updates.push("father_name = ?"); values.push(father_name); }
     if (mother_name !== undefined) { updates.push("mother_name = ?"); values.push(mother_name); }
-    
+
     // Support both 'phone' and 'phone_number' from frontend
     const resolvedPhone = phone !== undefined ? phone : phone_number;
     if (resolvedPhone !== undefined) { updates.push("phone_number = ?"); values.push(resolvedPhone); }
-    
+
     if (aadhaar !== undefined) { updates.push("aadhaar = ?"); values.push(aadhaar); }
     if (address !== undefined) { updates.push("address = ?"); values.push(address); }
     if (village !== undefined) { updates.push("village = ?"); values.push(village); }
@@ -190,7 +190,7 @@ export async function updateStudent(req, res) {
     if (pincode !== undefined) { updates.push("pincode = ?"); values.push(pincode); }
     if (is_hosteller !== undefined) { updates.push("is_hosteller = ?"); values.push((is_hosteller === 1 || is_hosteller === true) ? 1 : 0); }
     if (disabilities !== undefined) { updates.push("disabilities = ?"); values.push(disabilities); }
-    
+
     if (password !== undefined && password !== null && String(password).trim() !== "") {
       updates.push("password = ?");
       values.push(String(password).trim());
@@ -201,18 +201,18 @@ export async function updateStudent(req, res) {
     }
 
     if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
-    
+
     values.push(id);
     const sql = `UPDATE students SET ${updates.join(", ")} WHERE id = ?`;
     console.log("EXECUTING SQL:", sql, values);
     const [result] = await db.query(sql, values);
     console.log("SQL RESULT:", result);
-    
+
     // Regenerate QR IDs if category changed
     if (category !== undefined) {
       await generateStudentQRIds(db, id);
     }
-    
+
     res.json({ id: id, updated: result.affectedRows > 0, ok: true });
   } catch (err) {
     console.error("PUT /api/students error:", err);
@@ -270,11 +270,12 @@ export async function bulkCreateStudents(req, res) {
   };
 
   for (const student of students) {
-    const { 
-      full_name, first_name, last_name, roll_no, section, school_id, section_id, grade_id, 
+    const {
+      full_name, first_name, last_name, roll_no, email, section, school_id, section_id, grade_id,
       joined_at, password, category, profile_image_path,
       gender, dob, father_name, mother_name, phone, phone_number, aadhaar,
       address, village, mandal, district, state, pincode, hostel_status, is_hosteller, disabilities
+
     } = student || {};
 
     const parsedSchoolId = Number(school_id);
@@ -291,7 +292,7 @@ export async function bulkCreateStudents(req, res) {
     try {
       const schoolIdNum = Number(school_id);
       let resolvedSectionId = section_id != null ? Number(section_id) : null;
-      
+
       if (!resolvedSectionId) {
         const sectionCode = section ? String(section).trim().toUpperCase() : "A";
         const gradeIdNum = grade_id != null ? Number(grade_id) : 10;
@@ -309,20 +310,31 @@ export async function bulkCreateStudents(req, res) {
           resolvedSectionId = Number(insSec.insertId);
         }
       }
-      
+
       const fullName = String(full_name || "").trim();
       const firstNameResolved = String(first_name || (fullName.split(" ")[0] || "Student")).trim();
       const lastNameResolved = String(last_name || fullName.split(" ").slice(1).join(" ") || "Demo").trim();
       const studentCategory = category || "A";
-      
+      const emailVal = email ? String(email).trim() : null;
+
       const resolvedPhone = phone || phone_number || null;
       const resolvedIsHosteller = (hostel_status === 'Yes' || is_hosteller === true || is_hosteller === 1) ? 1 : 0;
-      
+
+      // Uniqueness check for email
+      if (emailVal) {
+        const [teacherExist] = await db.query("SELECT id FROM teachers WHERE email = ? LIMIT 1", [emailVal]);
+        const [studentExist] = await db.query("SELECT id FROM students WHERE email = ? LIMIT 1", [emailVal]);
+        if (teacherExist.length > 0 || studentExist.length > 0) {
+          results.failed.push({ student, error: `Email '${emailVal}' is already registered in the system.` });
+          continue;
+        }
+      }
+
       // Duplicate Check
       let existingStudent = null;
-      
+
       // Aadhaar check removed as requested by user.
-      
+
       const [existing] = await db.query(
         "SELECT id, first_name, last_name FROM students WHERE school_id = ? AND section_id = ? AND first_name = ? AND last_name = ? LIMIT 1",
         [schoolIdNum, resolvedSectionId, firstNameResolved, lastNameResolved]
@@ -330,26 +342,27 @@ export async function bulkCreateStudents(req, res) {
       if (existing && existing.length > 0) existingStudent = existing[0];
 
       if (existingStudent) {
-        results.failed.push({ 
-          student, 
-          error: `This student is already registered (Matches ID: ${existingStudent.id}).` 
+        results.failed.push({
+          student,
+          error: `This student is already registered (Matches ID: ${existingStudent.id}).`
         });
         continue;
       }
 
       const [insertResult] = await db.query(
         `INSERT INTO students (
-          school_id, section_id, first_name, last_name, roll_no, password, joined_at, category, profile_image_path,
+          school_id, section_id, first_name, last_name, email, roll_no, password, joined_at, category, profile_image_path,
           gender, dob, father_name, mother_name, phone_number, aadhaar, address, village, mandal, district, state, pincode, is_hosteller, disabilities
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          schoolIdNum, 
-          resolvedSectionId, 
-          firstNameResolved, 
-          lastNameResolved, 
+          schoolIdNum,
+          resolvedSectionId,
+          firstNameResolved,
+          lastNameResolved,
+          emailVal,
           roll_no || null,
-          passwordPlain, 
-          joined_at ? String(joined_at).slice(0, 10) : new Date().toISOString().slice(0, 10), 
+          passwordPlain,
+          joined_at ? String(joined_at).slice(0, 10) : new Date().toISOString().slice(0, 10),
           studentCategory,
           profile_image_path || null,
           gender || null,
@@ -368,19 +381,19 @@ export async function bulkCreateStudents(req, res) {
           disabilities || null
         ]
       );
-      
+
       const studentId = insertResult.insertId;
-      
+
       try {
         await generateStudentQRIds(db, studentId);
       } catch (qrErr) {
         console.error("QR ID generation failed for student", studentId, qrErr.message);
       }
-      
+
       results.successful.push({
-        id: String(studentId), 
-        full_name: `${firstNameResolved} ${lastNameResolved}`.trim(), 
-        school_id: String(schoolIdNum), 
+        id: String(studentId),
+        full_name: `${firstNameResolved} ${lastNameResolved}`.trim(),
+        school_id: String(schoolIdNum),
         section_id: String(resolvedSectionId),
         category: studentCategory
       });
@@ -399,7 +412,7 @@ export async function bulkCreateStudents(req, res) {
 export async function getStudentDashboard(req, res) {
   const db = getPool();
   const roll_no = req.params.roll_no;
-  
+
   if (!roll_no) {
     return res.status(400).json({ error: "roll_no is required" });
   }
@@ -498,7 +511,7 @@ export async function markStudentAttendance(req, res) {
   // Support both date and attendance_date from frontend
   const attendanceDate = req.body.attendance_date || req.body.date;
   const attendance = req.body.attendance; // array of { student_id, class_id, status, section_id, teacher_id }
-  
+
   if (!attendanceDate || !Array.isArray(attendance)) {
     return res.status(400).json({ error: "date/attendance_date and attendance array are required" });
   }
@@ -507,7 +520,7 @@ export async function markStudentAttendance(req, res) {
     for (const record of attendance) {
       const { student_id, class_id, status, section_id, teacher_id } = record;
       if (!student_id || !status) continue;
-      
+
       const cId = class_id || null;
       const sId = section_id || null;
       const tId = teacher_id || null;

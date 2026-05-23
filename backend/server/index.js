@@ -22,7 +22,7 @@ import schoolRoutes from "./routes/school.routes.js";
 import adminManagementRoutes from "./routes/admin.routes.js";
 import subjectRoutes from "./routes/subject.routes.js";
 import gatingRoutes from "./routes/gating.routes.js";
-
+import reportcardRoutes from "./routes/reportcard.routes.js";
 import http from "http";
 import { createWorkers } from "./mediasoup.js";
 import { setupSignaling } from "./signaling.js";
@@ -63,7 +63,7 @@ app.use("/api/schools", schoolRoutes);
 app.use("/api/admin", adminManagementRoutes);
 app.use("/api/subjects", subjectRoutes);
 app.use("/api/chapter-gating", gatingRoutes);
-
+app.use("/api/reportcard", reportcardRoutes);
 // AI Proxy Routes
 app.post("/api/ai/ask", async (req, res) => {
   try {
@@ -3299,13 +3299,13 @@ app.put("/api/live-session/:id/end", async (req, res) => {
   try {
     liveQuizCheckpoint("PUT /api/live-session/:id/end", { liveSessionId: id });
 
-    // Mark the associated topic as completed
-    const [sessionRows] = await db.query("SELECT topic_id FROM live_sessions WHERE id = ?", [id]);
-    const topicId = sessionRows && sessionRows[0] ? sessionRows[0].topic_id : null;
-    if (topicId) {
-      await db.query("UPDATE topics SET status = 'completed' WHERE id = ?", [topicId]);
-      liveQuizCheckpoint("PUT /api/live-session/:id/end:topic_completed", { topicId });
-    }
+    // Mark the associated topic as completed (REMOVED: this mutates global topic status instead of per-teacher)
+    // const [sessionRows] = await db.query("SELECT topic_id FROM live_sessions WHERE id = ?", [id]);
+    // const topicId = sessionRows && sessionRows[0] ? sessionRows[0].topic_id : null;
+    // if (topicId) {
+    //   await db.query("UPDATE topics SET status = 'completed' WHERE id = ?", [topicId]);
+    //   liveQuizCheckpoint("PUT /api/live-session/:id/end:topic_completed", { topicId });
+    // }
 
     await db.query(
       `UPDATE live_sessions SET status = 'ended', attendance_marked = 1, quiz_submitted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
@@ -3498,7 +3498,7 @@ app.post("/api/ai/ask", async (req, res) => {
 // Chapter-level marks (feeds studentQuizResults on GET /api/all)
 app.post("/api/student-marks", async (req, res) => {
   const db = getPool();
-  const { studentId, chapterId, score, total, assessedOn, assessmentType, liveQuizSessionId } = req.body || {};
+  const { studentId, chapterId, score, total, assessedOn, assessmentType, liveQuizSessionId, subjectId: payloadSubjectId } = req.body || {};
   const sid = Number(studentId);
   const cid = Number(chapterId);
   const sc = Number(score);
@@ -3518,6 +3518,44 @@ app.post("/api/student-marks", async (req, res) => {
         ? [sid, cid, atype, Math.min(sc, tot), tot, dateStr, lqid]
         : [sid, cid, atype, Math.min(sc, tot), tot, dateStr]
     );
+
+    // Propagate changes to student_exam_marks and update performance summary if this is an exam type
+    try {
+      let subjectId = payloadSubjectId ? Number(payloadSubjectId) : null;
+      if (!subjectId) {
+        const [chapRows] = await db.query("SELECT subject_id FROM chapters WHERE id = ? LIMIT 1", [cid]);
+        subjectId = chapRows && chapRows[0] ? chapRows[0].subject_id : null;
+      }
+      if (subjectId) {
+        const examType = atype.toUpperCase();
+        const validExamTypes = ['FA1', 'FA2', 'FA3', 'FA4', 'SA1', 'SA2', 'QUIZ'];
+        if (validExamTypes.includes(examType)) {
+          const academicYear = "2024-25";
+          const [existing] = await db.query(
+            "SELECT id FROM student_exam_marks WHERE student_id = ? AND subject_id = ? AND exam_type = ? AND academic_year = ? LIMIT 1",
+            [sid, subjectId, examType, academicYear]
+          );
+          if (existing && existing[0]) {
+            await db.query(
+              "UPDATE student_exam_marks SET marks_obtained = ?, max_marks = ? WHERE id = ?",
+              [Math.min(sc, tot), tot, existing[0].id]
+            );
+          } else {
+            await db.query(
+              "INSERT INTO student_exam_marks (student_id, subject_id, exam_type, marks_obtained, max_marks, academic_year) VALUES (?, ?, ?, ?, ?, ?)",
+              [sid, subjectId, examType, Math.min(sc, tot), tot, academicYear]
+            );
+          }
+          
+          // Dynamically import reportcard service to update performance summary
+          const reportCardService = await import("./services/reportcard.service.js");
+          await reportCardService.updatePerformanceSummary(sid);
+        }
+      }
+    } catch (syncErr) {
+      console.error("Error syncing marks to exam marks or updating summary:", syncErr);
+    }
+
     res.json({ ok: true, id: r.insertId, studentId: sid, chapterId: cid, score: sc, total: tot, assessedOn: dateStr, liveQuizSessionId: lqid || null });
   } catch (err) {
     console.error("POST /api/student-marks error:", err);

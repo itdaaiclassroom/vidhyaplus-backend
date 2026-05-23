@@ -113,6 +113,14 @@ export async function bulkCreateTeachers(req, res) {
     const passwordPlain = String(password).trim();
 
     try {
+      // Check if email already exists in teachers or students
+      const [teacherExist] = await db.query("SELECT id FROM teachers WHERE email = ? LIMIT 1", [emailVal]);
+      const [studentExist] = await db.query("SELECT id FROM students WHERE email = ? LIMIT 1", [emailVal]);
+      if (teacherExist.length > 0 || studentExist.length > 0) {
+        results.failed.push({ teacher, error: `Email '${emailVal}' is already registered in the system.` });
+        continue;
+      }
+
       const [insertResult] = await db.query(
         "INSERT INTO teachers (full_name, email, school_id, password, role) VALUES (?, ?, ?, ?, 'teacher')",
         [String(full_name).trim(), emailVal, parsedSchoolId, passwordPlain]
