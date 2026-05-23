@@ -3628,7 +3628,10 @@ app.post("/api/subjects/:subjectId/grades/:gradeId/extract-textbook", async (req
     console.log(`[extract-textbook] Resolved pdf_path for AI: ${resolvedPdfPath}`);
 
     // 3. Call the Python FastAPI AI segmentation service
-    const aiServiceUrl = process.env.VITE_AI_API_URL || "http://localhost:8001";
+    // NOTE: Use AI_SERVICE_URL (no VITE_ prefix). VITE_ vars are frontend-only build-time
+    // variables and are NEVER available in Node.js at runtime (especially on Render).
+    // Set AI_SERVICE_URL in your Render backend environment dashboard.
+    const aiServiceUrl = process.env.AI_SERVICE_URL || "http://localhost:8001";
     let aiResponseData;
     try {
       const aiRes = await fetch(`${aiServiceUrl}/extract_textbook`, {
