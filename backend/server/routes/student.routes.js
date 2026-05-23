@@ -5,12 +5,12 @@ import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-router.post("/attendance", authenticateJWT, authorizeRole(["admin", "principal", "teacher"]), markStudentAttendance);
+router.post("/attendance", authenticateJWT, authorizeRole(["admin", "principal", "teacher", "student_management"]), markStudentAttendance);
 router.get("/attendance", authenticateJWT, getStudentAttendance);
-router.put("/attendance/:id", authenticateJWT, authorizeRole(["admin", "principal", "teacher"]), updateStudentAttendance);
+router.put("/attendance/:id", authenticateJWT, authorizeRole(["admin", "principal", "teacher", "student_management"]), updateStudentAttendance);
 
 router.post("/", authenticateJWT, createStudent);
-router.post("/bulk", authenticateJWT, authorizeRole(["admin", "principal"]), bulkCreateStudents);
+router.post("/bulk", authenticateJWT, authorizeRole(["admin", "principal", "student_management"]), bulkCreateStudents);
 router.get("/dashboard/:roll_no", authenticateJWT, getStudentDashboard);
 router.put("/:id", authenticateJWT, updateStudent);
 router.delete("/:id", authenticateJWT, deleteStudent);

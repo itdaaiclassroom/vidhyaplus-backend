@@ -3,7 +3,12 @@ import bcrypt from "bcrypt";
 import { auditLog, actorFromReq } from "../utils/auditLogger.js";
 
 const SALT_ROUNDS = 10;
-const ALLOWED_TEAM_ROLES = ["material_management"];
+const ALLOWED_TEAM_ROLES = [
+  "material_management",   // Can upload/manage textbooks, PPTs, question banks
+  "school_management",     // Can create/update/delete schools
+  "student_management",    // Can create/update/delete students and manage attendance
+  "teacher_management",    // Can create/update/delete teachers and manage attendance
+];
 
 /* ──────────────────────────────────────────────
    Helpers
