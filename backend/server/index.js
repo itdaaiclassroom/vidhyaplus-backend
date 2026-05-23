@@ -3668,6 +3668,11 @@ app.post("/api/subjects/:subjectId/grades/:gradeId/extract-textbook", async (req
 
     // 3. Insert chapters + topics in a single atomic transaction
     await db.query("START TRANSACTION");
+    
+    // Clear out old chapters (which automatically cascades and deletes old topics, PPTs, etc. in MySQL)
+    // so that the new textbook curriculum completely replaces the old one cleanly.
+    await db.query("DELETE FROM chapters WHERE subject_id = ? AND grade_id = ?", [subjectId, gradeId]);
+
     let chaptersInserted = 0;
     let topicsInserted = 0;
 
@@ -3677,10 +3682,13 @@ app.post("/api/subjects/:subjectId/grades/:gradeId/extract-textbook", async (req
         const chapterName = (ch.chapter_name || `Chapter ${i + 1}`).trim();
         const chapterNo = i + 1;
 
-        // Insert chapter row
+        // Insert or update chapter row
         const [chapterResult] = await db.query(
           `INSERT INTO chapters (subject_id, grade_id, chapter_name, chapter_no, macro_month_label, teaching_plan_summary)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             chapter_name = VALUES(chapter_name),
+             teaching_plan_summary = VALUES(teaching_plan_summary)`,
           [
             subjectId,
             gradeId,
@@ -3690,34 +3698,47 @@ app.post("/api/subjects/:subjectId/grades/:gradeId/extract-textbook", async (req
             ch.learning_intent || null,
           ]
         );
-        const chapterId = chapterResult.insertId;
+        
+        let chapterId = chapterResult.insertId;
+        if (!chapterId) {
+          // If the row already existed and was updated, insertId might be 0. Let's retrieve it:
+          const [existRow] = await db.query(
+            "SELECT id FROM chapters WHERE subject_id = ? AND grade_id = ? AND chapter_no = ? LIMIT 1",
+            [subjectId, gradeId, chapterNo]
+          );
+          chapterId = existRow[0]?.id;
+        }
+        
         chaptersInserted++;
 
         // Link the full textbook PDF to this chapter (for the AI Auto-Workflow button in TeacherDashboard)
-        await db.query(
-          `INSERT INTO chapter_textual_materials (chapter_id, pdf_url, title)
-           VALUES (?, ?, ?)
-           ON DUPLICATE KEY UPDATE pdf_url = VALUES(pdf_url), title = VALUES(title)`,
-          [chapterId, pdf_url.trim(), `${chapterName} — Textbook`]
-        ).catch(async () => {
-          // Fallback if UNIQUE constraint doesn't allow ON DUPLICATE KEY
+        if (chapterId) {
           await db.query(
-            "INSERT INTO chapter_textual_materials (chapter_id, pdf_url, title) VALUES (?, ?, ?)",
+            `INSERT INTO chapter_textual_materials (chapter_id, pdf_url, title)
+             VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE pdf_url = VALUES(pdf_url), title = VALUES(title)`,
             [chapterId, pdf_url.trim(), `${chapterName} — Textbook`]
-          );
-        });
+          ).catch(async () => {
+            // Fallback if UNIQUE constraint doesn't allow ON DUPLICATE KEY
+            await db.query(
+              "INSERT INTO chapter_textual_materials (chapter_id, pdf_url, title) VALUES (?, ?, ?)",
+              [chapterId, pdf_url.trim(), `${chapterName} — Textbook`]
+            );
+          });
 
-        // Insert topics for this chapter
-        const topicList = Array.isArray(ch.topics) ? ch.topics : [];
-        for (let j = 0; j < topicList.length; j++) {
-          const topic = topicList[j];
-          const topicName = (topic.topic_name || topic.name || `Topic ${j + 1}`).trim();
-          await db.query(
-            `INSERT INTO topics (chapter_id, name, order_num, status)
-             VALUES (?, ?, ?, 'not_started')`,
-            [chapterId, topicName, j + 1]
-          );
-          topicsInserted++;
+          // Insert or update topics for this chapter
+          const topicList = Array.isArray(ch.topics) ? ch.topics : [];
+          for (let j = 0; j < topicList.length; j++) {
+            const topic = topicList[j];
+            const topicName = (topic.topic_name || topic.name || `Topic ${j + 1}`).trim();
+            await db.query(
+              `INSERT INTO topics (chapter_id, name, order_num, status)
+               VALUES (?, ?, ?, 'not_started')
+               ON DUPLICATE KEY UPDATE name = VALUES(name)`,
+              [chapterId, topicName, j + 1]
+            );
+            topicsInserted++;
+          }
         }
       }
 
