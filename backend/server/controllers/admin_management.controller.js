@@ -22,11 +22,9 @@ async function hashPassword(plain) {
    DASHBOARD OVERVIEW & ANALYTICS
 ═══════════════════════════════════════════════ */
 
-/**
- * Admin Overview Analytics
- */
 export async function getDashboardOverview(req, res) {
   const db = getPool();
+  const date = req.query.date || new Date().toLocaleDateString('en-CA');
   try {
     const [[schoolsCount]] = await db.query("SELECT COUNT(*) as total FROM schools");
     const [[teachersCount]] = await db.query("SELECT COUNT(*) as total FROM teachers");
@@ -34,12 +32,55 @@ export async function getDashboardOverview(req, res) {
     const [[sessionsCompleted]] = await db.query("SELECT COUNT(*) as total FROM live_sessions WHERE status = 'completed'");
     const [[totalSessionsPlanned]] = await db.query("SELECT SUM(planned_periods) as total FROM chapters");
 
+    // Daily Student Attendance on the selected date
+    const [[studentAttRows]] = await db.query(`
+      SELECT 
+        SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END) as present,
+        SUM(CASE WHEN status = 'absent' THEN 1 ELSE 0 END) as absent
+      FROM attendance
+      WHERE attendance_date = ?
+    `, [date]);
+
+    // Daily Teacher Attendance on the selected date
+    const [[teacherAttRows]] = await db.query(`
+      SELECT 
+        SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END) as present,
+        SUM(CASE WHEN status = 'absent' THEN 1 ELSE 0 END) as absent,
+        SUM(CASE WHEN status = 'leave' THEN 1 ELSE 0 END) as leave_count
+      FROM teacher_attendance
+      WHERE attendance_date = ?
+    `, [date]);
+
+    // Daily Session stats on the selected date
+    const [[dailySessionStats]] = await db.query(`
+      SELECT 
+        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+        COUNT(*) as total
+      FROM live_sessions
+      WHERE DATE(session_date) = ?
+    `, [date]);
+
     res.json({
       totalSchools: schoolsCount.total,
       totalTeachers: teachersCount.total,
       totalStudents: studentsCount.total,
       sessionsCompleted: sessionsCompleted.total,
       sessionsTotal: totalSessionsPlanned.total || 1200,
+      studentAttendance: {
+        total: studentsCount.total,
+        present: Number(studentAttRows.present) || 0,
+        absent: Number(studentAttRows.absent) || 0
+      },
+      teacherAttendance: {
+        total: teachersCount.total,
+        present: Number(teacherAttRows.present) || 0,
+        absent: Number(teacherAttRows.absent) || 0,
+        leave: Number(teacherAttRows.leave_count) || 0
+      },
+      sessions: {
+        total: Number(dailySessionStats.total) || 0,
+        completed: Number(dailySessionStats.completed) || 0
+      }
     });
   } catch (err) {
     console.error("Dashboard overview error:", err);
