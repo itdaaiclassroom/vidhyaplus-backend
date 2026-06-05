@@ -903,3 +903,340 @@ export async function bulkDeleteQuestionsHandler(req, res) {
   }
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   CURRICULUM STRUCTURE — Excel-based chapter/topic hierarchy upload
+   Table: curriculum_structure
+   Mirrors the question-bank bulk-upload pattern exactly.
+══════════════════════════════════════════════════════════════════════ */
+
+/** Normalize grade for curriculum: allows 1–10 (wider than question bank's 6–10) */
+function normalizeGradeFull(raw) {
+  if (raw === null || raw === undefined || String(raw).trim() === '') return null;
+  const num = parseInt(String(raw).trim(), 10);
+  return num >= 1 && num <= 10 ? num : null;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   1. BULK UPLOAD — Excel / CSV → writes to chapters + topics tables
+   POST /api/subjects/curriculum/bulk
+   Body: { file: "<base64 .xlsx / .xls / .csv>" }
+   Auth: admin, principal, material_management
+
+   Excel columns: subject, grade, chapter, topic
+   Optional:      subtopics (;-separated), learning_intent
+
+   One row = one topic. Multiple rows with same chapter = topics under it.
+   Writes to the SAME chapters+topics tables the Teacher Dashboard reads.
+────────────────────────────────────────────────────────────────────── */
+export async function bulkUploadCurriculum(req, res) {
+  const db = getPool();
+  const { file } = req.body;
+  if (!file) return res.status(400).json({ error: 'file (base64) is required' });
+
+  try {
+    // 1. Build subject name → id map
+    const [subjRows] = await db.query('SELECT id, subject_name FROM subjects');
+    const subjectMap = {};
+    subjRows.forEach(s => { subjectMap[s.subject_name.trim().toLowerCase()] = s.id; });
+
+    // 2. Decode & parse spreadsheet (reuses existing parseSpreadsheetBuffer helper)
+    const base64Data = file.replace(/^data:[^;]+;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+    if (buffer.length === 0) return res.status(400).json({ error: 'file content is empty' });
+
+    let rows;
+    try {
+      rows = parseSpreadsheetBuffer(buffer);
+    } catch (parseErr) {
+      return res.status(422).json({ error: 'Could not parse file. Ensure it is .xlsx, .xls, or .csv.', detail: parseErr.message });
+    }
+    if (!rows || rows.length === 0) {
+      return res.status(422).json({ error: 'The uploaded file has no data rows.' });
+    }
+
+    // 3. Pre-load existing chapters and topics into memory maps/sets for fast lookup
+    const [existChapters] = await db.query('SELECT id, subject_id, grade_id, chapter_name, chapter_no FROM chapters');
+    const dbChapters = {};
+    const maxChapterNo = {};
+    for (const c of existChapters) {
+      const chKey = `${c.subject_id}_${c.grade_id}_${c.chapter_name.trim().toLowerCase()}`;
+      dbChapters[chKey] = { id: c.id, chapterNo: c.chapter_no };
+
+      const sgKey = `${c.subject_id}_${c.grade_id}`;
+      maxChapterNo[sgKey] = Math.max(maxChapterNo[sgKey] || 0, c.chapter_no);
+    }
+
+    const [existTopics] = await db.query('SELECT id, chapter_id, name, order_num FROM topics');
+    const dbTopics = new Set();
+    const maxTopicOrder = {};
+    for (const t of existTopics) {
+      dbTopics.add(`${t.chapter_id}_${t.name.trim().toLowerCase()}`);
+      maxTopicOrder[t.chapter_id] = Math.max(maxTopicOrder[t.chapter_id] || 0, t.order_num);
+    }
+
+    // 4. Parse and validate all rows
+    const validRows = [];
+    const errorRows = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNum = i + 2;
+
+      const keys = Object.fromEntries(
+        Object.entries(row).map(([k, v]) => [k.trim().toLowerCase(), String(v ?? '').trim()])
+      );
+
+      const rawSubject     = keys['subject'] || keys['subject name'] || '';
+      const rawGrade       = keys['grade'] || keys['class'] || '';
+      const chapterName    = (keys['chapter'] || keys['chapter name'] || '').trim();
+      const topicName      = (keys['topic'] || keys['topic name'] || '').trim();
+      const learningIntent = keys['learning intent'] || keys['learning_intent'] || null;
+
+      if (!rawSubject) { errorRows.push({ row: rowNum, reason: 'Subject is missing' }); continue; }
+      const subjectId = subjectMap[rawSubject.toLowerCase()];
+      if (!subjectId) { errorRows.push({ row: rowNum, reason: `Subject '${rawSubject}' not found` }); continue; }
+      const grade = normalizeGradeFull(rawGrade);
+      if (!grade) { errorRows.push({ row: rowNum, reason: `Grade '${rawGrade}' is invalid (1–10)` }); continue; }
+      if (!chapterName) { errorRows.push({ row: rowNum, reason: 'Chapter is missing' }); continue; }
+      if (!topicName)   { errorRows.push({ row: rowNum, reason: 'Topic is missing' }); continue; }
+
+      validRows.push({
+        subjectId,
+        grade,
+        chapterName,
+        topicName,
+        learningIntent: learningIntent || null
+      });
+    }
+
+    if (validRows.length === 0 && errorRows.length > 0) {
+      return res.status(422).json({ ok: false, uploaded: 0, skipped: 0, failed: errorRows.length, errors: errorRows });
+    }
+
+    // 5. Process valid rows in a transaction: reuse/insert chapters, skip/insert topics
+    let chaptersInserted = 0;
+    let topicsInserted = 0;
+    let topicsSkipped = 0;
+
+    const processedTopicsInFile = new Set();
+
+    await db.query('START TRANSACTION');
+    try {
+      for (const item of validRows) {
+        const { subjectId, grade, chapterName, topicName, learningIntent } = item;
+
+        // Check if chapter already exists in database or was created during this transaction
+        const chKey = `${subjectId}_${grade}_${chapterName.toLowerCase()}`;
+        let chapterId;
+        
+        if (dbChapters[chKey]) {
+          chapterId = dbChapters[chKey].id;
+        } else {
+          // Determine the next chapter number for this subject and grade
+          const sgKey = `${subjectId}_${grade}`;
+          const nextNo = (maxChapterNo[sgKey] || 0) + 1;
+          maxChapterNo[sgKey] = nextNo;
+
+          // Insert new chapter
+          const [chResult] = await db.query(
+            `INSERT INTO chapters (subject_id, grade_id, chapter_name, chapter_no, macro_month_label, teaching_plan_summary)
+             VALUES (?, ?, ?, ?, 'June', ?)`,
+            [subjectId, grade, chapterName, nextNo, learningIntent]
+          );
+          chapterId = chResult.insertId;
+          dbChapters[chKey] = { id: chapterId, chapterNo: nextNo };
+          chaptersInserted++;
+        }
+
+        if (!chapterId) {
+          throw new Error(`Failed to resolve chapter ID for chapter '${chapterName}'`);
+        }
+
+        // Check if topic already exists in database or within the same file upload
+        const tKey = `${chapterId}_${topicName.toLowerCase()}`;
+        
+        if (dbTopics.has(tKey) || processedTopicsInFile.has(tKey)) {
+          topicsSkipped++;
+          continue; // Skip existing topic
+        }
+
+        // Determine next topic order number
+        const nextOrder = (maxTopicOrder[chapterId] || 0) + 1;
+        maxTopicOrder[chapterId] = nextOrder;
+
+        // Insert new topic
+        await db.query(
+          `INSERT INTO topics (chapter_id, name, order_num, status)
+           VALUES (?, ?, ?, 'not_started')`,
+          [chapterId, topicName, nextOrder]
+        );
+        
+        dbTopics.add(tKey);
+        processedTopicsInFile.add(tKey);
+        topicsInserted++;
+      }
+      await db.query('COMMIT');
+    } catch (txErr) {
+      await db.query('ROLLBACK');
+      throw txErr;
+    }
+
+    console.log(`[curriculum-bulk] ✅ ${chaptersInserted} chapters, ${topicsInserted} topics from Excel (skipped ${topicsSkipped} duplicates)`);
+    return res.status(201).json({
+      ok: true,
+      chapters_inserted: chaptersInserted,
+      uploaded: topicsInserted,
+      skipped: topicsSkipped,
+      failed: errorRows.length,
+      errors: errorRows,
+    });
+
+  } catch (err) {
+    console.error('POST /api/subjects/curriculum/bulk error:', err);
+    return res.status(500).json({ error: String(err.message) });
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   2. GET — Curriculum list (reads from chapters + topics — same as Teacher Dashboard)
+   GET /api/subjects/curriculum
+   Query: ?subject_id=1&grade=10
+   Auth: admin, principal, teacher, material_management
+────────────────────────────────────────────────────────────────────── */
+export async function getCurriculumStructure(req, res) {
+  const db = getPool();
+
+  const conditions = [];
+  const params = [];
+
+  if (req.query.subject_id) {
+    conditions.push('c.subject_id = ?');
+    params.push(Number(req.query.subject_id));
+  }
+  if (req.query.grade) {
+    const g = normalizeGradeFull(req.query.grade);
+    if (g) { conditions.push('c.grade_id = ?'); params.push(g); }
+  }
+  if (req.query.chapter) {
+    conditions.push('c.chapter_name LIKE ?');
+    params.push(`%${req.query.chapter}%`);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  try {
+    // Fetch all matching chapters with their subject name
+    const [chapters] = await db.query(
+      `SELECT c.id AS chapter_id, c.subject_id, s.subject_name, c.grade_id AS grade,
+              c.chapter_name, c.chapter_no, c.teaching_plan_summary AS learning_intent
+       FROM chapters c
+       JOIN subjects s ON s.id = c.subject_id
+       ${where}
+       ORDER BY c.subject_id, c.grade_id, c.chapter_no, c.chapter_name`,
+      params
+    );
+
+    if (chapters.length === 0) {
+      return res.json({ total_topics: 0, chapters: [] });
+    }
+
+    // Fetch topics for all returned chapters in one query
+    const chapterIds = chapters.map(c => c.chapter_id);
+    const placeholders = chapterIds.map(() => '?').join(',');
+    const [topics] = await db.query(
+      `SELECT id, chapter_id, name AS topic_name, order_num AS topic_order, status
+       FROM topics
+       WHERE chapter_id IN (${placeholders})
+       ORDER BY chapter_id, order_num, name`,
+      chapterIds
+    );
+
+    // Group topics under their chapter
+    const topicsByChapter = {};
+    for (const t of topics) {
+      if (!topicsByChapter[t.chapter_id]) topicsByChapter[t.chapter_id] = [];
+      topicsByChapter[t.chapter_id].push({
+        id: t.id,
+        topic_name: t.topic_name,
+        topic_order: t.topic_order,
+        status: t.status,
+        subtopics: [],
+      });
+    }
+
+    const result = chapters.map(c => ({
+      chapter_id: c.chapter_id,
+      subject_id: c.subject_id,
+      subject_name: c.subject_name,
+      grade: c.grade,
+      chapter_name: c.chapter_name,
+      chapter_order: c.chapter_no,
+      learning_intent: c.learning_intent,
+      topics: topicsByChapter[c.chapter_id] || [],
+    }));
+
+    return res.json({
+      total_topics: topics.length,
+      chapters: result,
+    });
+  } catch (err) {
+    console.error('GET /api/subjects/curriculum error:', err);
+    return res.status(500).json({ error: String(err.message) });
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   3. DELETE — Remove a single topic by topics.id
+   DELETE /api/subjects/curriculum/:id
+   Auth: admin, material_management
+────────────────────────────────────────────────────────────────────── */
+export async function deleteCurriculumEntry(req, res) {
+  const db = getPool();
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ error: 'id required' });
+
+  try {
+    // Delete from topics table (same table Teacher Dashboard uses)
+    const [result] = await db.query('DELETE FROM topics WHERE id = ?', [id]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Topic not found' });
+    return res.json({ ok: true, deleted: true });
+  } catch (err) {
+    console.error('DELETE /api/subjects/curriculum/:id error:', err);
+    return res.status(500).json({ error: String(err.message) });
+  }
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   4. BULK DELETE — Remove multiple entries or all by filters
+   DELETE /api/subjects/curriculum/bulk
+   Body: { entry_ids: [1,2,3] } OR { delete_all: true, filters: { subject_id, grade, chapter_name } }
+   Auth: admin, material_management
+────────────────────────────────────────────────────────────────────── */
+export async function bulkDeleteCurriculumHandler(req, res) {
+  const db = getPool();
+  const { entry_ids, delete_all, filters } = req.body;
+
+  try {
+    if (delete_all) {
+      const conditions = [];
+      const params = [];
+      if (filters) {
+        if (filters.subject_id) { conditions.push('subject_id = ?'); params.push(Number(filters.subject_id)); }
+        if (filters.grade)      { conditions.push('grade = ?');      params.push(Number(filters.grade)); }
+        if (filters.chapter_name) { conditions.push('chapter_name = ?'); params.push(filters.chapter_name); }
+      }
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const [result] = await db.query(`DELETE FROM curriculum_structure ${whereClause}`, params);
+      return res.json({ ok: true, deleted_count: result.affectedRows });
+    } else if (Array.isArray(entry_ids) && entry_ids.length > 0) {
+      const placeholders = entry_ids.map(() => '?').join(',');
+      const [result] = await db.query(`DELETE FROM curriculum_structure WHERE id IN (${placeholders})`, entry_ids);
+      return res.json({ ok: true, deleted_count: result.affectedRows });
+    } else {
+      return res.status(400).json({ error: 'Provide entry_ids array or delete_all flag.' });
+    }
+  } catch (err) {
+    console.error('DELETE /api/subjects/curriculum/bulk error:', err);
+    return res.status(500).json({ error: String(err.message) });
+  }
+}
