@@ -18,6 +18,11 @@ import {
   getSubjectTopics,
   getQuestionBankMetadata,
   bulkDeleteQuestionsHandler,
+  // Curriculum Structure
+  bulkUploadCurriculum,
+  getCurriculumStructure,
+  deleteCurriculumEntry,
+  bulkDeleteCurriculumHandler as bulkDeleteCurriculumRoute,
 } from "../controllers/subject.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -93,6 +98,40 @@ router.delete(
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
   deleteSubjectQuestion
+);
+
+// ── Curriculum Structure (static paths BEFORE dynamic /:id routes) ───────
+
+// Excel bulk upload
+router.post(
+  "/curriculum/bulk",
+  authenticateJWT,
+  authorizeRole(["admin", "principal", "material_management"]),
+  bulkUploadCurriculum
+);
+
+// Bulk delete (by id list or filters)
+router.delete(
+  "/curriculum/bulk",
+  authenticateJWT,
+  authorizeRole(["admin", "material_management"]),
+  bulkDeleteCurriculumRoute
+);
+
+// Get curriculum list (grouped by chapter)
+router.get(
+  "/curriculum",
+  authenticateJWT,
+  authorizeRole(["admin", "principal", "teacher", "material_management"]),
+  getCurriculumStructure
+);
+
+// Delete single curriculum entry
+router.delete(
+  "/curriculum/:id",
+  authenticateJWT,
+  authorizeRole(["admin", "material_management"]),
+  deleteCurriculumEntry
 );
 
 // ── Subject CRUD ────────────────────────────────────────────────────────
