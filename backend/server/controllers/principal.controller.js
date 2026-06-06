@@ -6,6 +6,18 @@ import { auditLog, actorFromReq } from "../utils/auditLogger.js";
 export async function getPrincipalProfile(req, res) {
   const db = getPool();
   const principalId = req.user.id;
+
+  if (req.user && req.user.role === 'admin') {
+    return res.json({
+      id: principalId,
+      email: req.user.email || 'admin@example.com',
+      full_name: 'Admin',
+      school_id: Number(req.query.school_id || req.headers['x-school-id']) || 0,
+      school_name: 'Admin Dashboard',
+      role: 'admin'
+    });
+  }
+
   try {
     const [rows] = await db.query(
       `SELECT t.id, t.email, t.full_name, t.school_id, t.role, s.school_name 
@@ -477,7 +489,11 @@ export async function updateTeacherSubjects(req, res) {
 }
 
 // ── Helper: resolve principal's school_id from JWT ──
-async function getPrincipalSchoolId(db, principalId) {
+async function getPrincipalSchoolId(req, db, principalId) {
+  if (req.user && req.user.role === 'admin') {
+    const sid = req.query.school_id || req.body.school_id || req.headers['x-school-id'];
+    return sid ? Number(sid) : null;
+  }
   const [rows] = await db.query(
     "SELECT school_id FROM teachers WHERE id = ? AND role = 'principal' LIMIT 1",
     [Number(principalId)]
@@ -504,7 +520,7 @@ export async function getSchoolSections(req, res) {
   const db = getPool();
   const principalId = req.user.id;
   try {
-    const schoolId = await getPrincipalSchoolId(db, principalId);
+    const schoolId = await getPrincipalSchoolId(req, db, principalId);
     if (!schoolId) return res.status(403).json({ error: "Principal school not found" });
 
     // Optional filter by grade
@@ -549,7 +565,7 @@ export async function createSection(req, res) {
   const db = getPool();
   const principalId = req.user.id;
   try {
-    const schoolId = await getPrincipalSchoolId(db, principalId);
+    const schoolId = await getPrincipalSchoolId(req, db, principalId);
     if (!schoolId) return res.status(403).json({ error: "Principal school not found" });
 
     const code = String(section_code).trim().toUpperCase();
@@ -607,7 +623,7 @@ export async function updateSection(req, res) {
   const db = getPool();
   const principalId = req.user.id;
   try {
-    const schoolId = await getPrincipalSchoolId(db, principalId);
+    const schoolId = await getPrincipalSchoolId(req, db, principalId);
     if (!schoolId) return res.status(403).json({ error: "Principal school not found" });
 
     // Verify the section belongs to this school
@@ -651,7 +667,7 @@ export async function deleteSection(req, res) {
   const db = getPool();
   const principalId = req.user.id;
   try {
-    const schoolId = await getPrincipalSchoolId(db, principalId);
+    const schoolId = await getPrincipalSchoolId(req, db, principalId);
     if (!schoolId) return res.status(403).json({ error: "Principal school not found" });
 
     // Verify the section belongs to this school
