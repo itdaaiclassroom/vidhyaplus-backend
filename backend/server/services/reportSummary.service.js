@@ -303,7 +303,7 @@ function buildOptimizedPrompt({ school, klass, subject, reportType, dateRange, m
     .join(", ");
 
   return `You are an expert district educational administrator AI assistant.
-Write a formal executive summary (3 bullet points) and analytical insights (3 bullet points) for this school district report.
+Write a formal executive summary (3 bullet points), analytical insights (3 bullet points), and 3 concrete strategic interventions (actionable steps for the department/administration to improve student learning outcomes or fix data collection gaps based on these metrics) for this school district report.
 
 Scope: ${school || "All Schools"} | ${klass || "All Classes"} | ${subject || "All Subjects"}
 Period: ${reportType} (${Array.isArray(dateRange) ? dateRange.join(" to ") : "All Time"})
@@ -314,7 +314,7 @@ Weak Topics: ${weakest || "N/A"}
 RULES:
 1. Return ONLY valid JSON, no markdown.
 2. JSON structure:
-{"executiveSummary":["bullet1","bullet2","bullet3"],"aiAnalysis":["bullet1","bullet2","bullet3"],"projectStatus":"THRIVING|ON TRACK|AT RISK|CRITICAL","healthScore":0-100}`;
+{"executiveSummary":["bullet1","bullet2","bullet3"],"aiAnalysis":["bullet1","bullet2","bullet3"],"strategicInterventions":["action1","action2","action3"],"projectStatus":"THRIVING|ON TRACK|AT RISK|CRITICAL","healthScore":0-100}`;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -379,6 +379,15 @@ function generateFallback(filters) {
         ? `Targeted revision recommended for ${weakestTopics[0].topic || weakestTopics[0].subject} to improve outcomes.`
         : "Review curriculum and chapter quiz metrics.",
       `Attendance compliance is at ${attendanceRate}%.`,
+    ],
+    strategicInterventions: [
+      averageScore < 60
+        ? `Conduct remediation sessions for classes underperforming in recent quizzes.`
+        : `Expand advanced study materials for schools demonstrating strong academic gains.`,
+      attendanceRate < 80
+        ? `Deploy ground staff to schools with sub-80% attendance to investigate student absenteeism.`
+        : `Implement positive reinforcement awards to sustain high daily attendance rates.`,
+      `Audit digital classroom equipment (tablets and smartboards) to ensure uninterrupted platform usage.`
     ],
     projectStatus: `${projectStatus} (Fallback)`,
     healthScore,
