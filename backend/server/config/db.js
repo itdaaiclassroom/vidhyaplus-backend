@@ -7,7 +7,7 @@ export function getPool() {
   if (!pool) {
     const url = process.env.MYSQL_URL || process.env.DATABASE_URL;
     if (url) {
-      pool = mysql.createPool({ uri: url, connectTimeout: 15000 });
+      pool = mysql.createPool({ uri: url, connectTimeout: 15000, charset: "utf8mb4" });
     } else {
       const host = process.env.MYSQL_HOST || "localhost";
       const port = process.env.MYSQL_PORT ? Number(process.env.MYSQL_PORT) : 3306;
@@ -31,6 +31,7 @@ export function getPool() {
         password,
         database,
         connectTimeout: 15000,
+        charset: "utf8mb4",
         ...(sslConfig !== undefined ? { ssl: sslConfig } : {}),
       });
     }

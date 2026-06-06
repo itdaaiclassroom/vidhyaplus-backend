@@ -17,6 +17,15 @@ const ALTERS = [
   "ALTER TABLE students ADD COLUMN address TEXT NULL",
   "ALTER TABLE students ADD COLUMN is_hosteller TINYINT(1) NOT NULL DEFAULT 0",
   "ALTER TABLE students ADD COLUMN phone_number VARCHAR(20) NULL",
+  "ALTER TABLE students ADD COLUMN email VARCHAR(255) NULL UNIQUE AFTER last_name",
+  "ALTER TABLE students ADD COLUMN category VARCHAR(50) NULL",
+  "ALTER TABLE students ADD COLUMN profile_image_path VARCHAR(255) NULL AFTER joined_at",
+  "ALTER TABLE students ADD COLUMN gender VARCHAR(20) NULL",
+  "ALTER TABLE students ADD COLUMN dob DATE NULL",
+  "ALTER TABLE students ADD COLUMN father_name VARCHAR(100) NULL",
+  "ALTER TABLE students ADD COLUMN mother_name VARCHAR(100) NULL",
+  "ALTER TABLE students ADD COLUMN aadhaar VARCHAR(20) NULL",
+  "ALTER TABLE students ADD COLUMN disabilities VARCHAR(255) NULL",
 
   // 3. Add columns to chapters and topics
   "ALTER TABLE chapters ADD COLUMN textbook_chunk_pdf_path VARCHAR(1024) NULL AFTER teaching_plan_summary",
@@ -192,7 +201,41 @@ const TABLES = [
     assigned_for ENUM('student', 'teacher', 'both') DEFAULT 'both',
     created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_sqb_subject FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
-  ) ENGINE=InnoDB;`
+  ) ENGINE=InnoDB;`,
+
+  // 11. report_summary_cache
+  `CREATE TABLE IF NOT EXISTS report_summary_cache (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    cache_key       VARCHAR(128)   NOT NULL,
+    data_version    VARCHAR(128)   NOT NULL,
+    report_data     JSON           NOT NULL,
+    report_type     VARCHAR(32)    DEFAULT NULL,
+    school_filter   VARCHAR(255)   DEFAULT NULL,
+    class_filter    VARCHAR(255)   DEFAULT NULL,
+    subject_filter  VARCHAR(255)   DEFAULT NULL,
+    date_range_start VARCHAR(32)   DEFAULT NULL,
+    date_range_end   VARCHAR(32)   DEFAULT NULL,
+    ai_provider     VARCHAR(32)    DEFAULT 'ollama',
+    ai_model        VARCHAR(64)    DEFAULT 'mistral',
+    generation_ms   INT            DEFAULT 0,
+    from_cache      TINYINT(1)     DEFAULT 0,
+    created_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
+    expires_at      TIMESTAMP      NULL DEFAULT NULL,
+    UNIQUE KEY idx_cache_key (cache_key)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+
+  // 12. report_analytics_log
+  `CREATE TABLE IF NOT EXISTS report_analytics_log (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    cache_key       VARCHAR(128)   DEFAULT NULL,
+    request_type    ENUM('cache_hit','cache_miss','dedup','fallback','error') NOT NULL,
+    ai_provider     VARCHAR(32)    DEFAULT NULL,
+    ai_model        VARCHAR(64)    DEFAULT NULL,
+    generation_ms   INT            DEFAULT 0,
+    estimated_tokens INT           DEFAULT 0,
+    error_message   TEXT           DEFAULT NULL,
+    created_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`
 ];
 
 async function migrate() {
