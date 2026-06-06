@@ -4217,6 +4217,40 @@ const HOST = process.env.HOST || "0.0.0.0";
 (async () => {
   try {
     const db = getPool();
+    
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS report_summary_cache (
+        cache_key VARCHAR(64) PRIMARY KEY,
+        data_version VARCHAR(64) NOT NULL,
+        report_data JSON NOT NULL,
+        report_type VARCHAR(50),
+        school_filter VARCHAR(255),
+        class_filter VARCHAR(255),
+        subject_filter VARCHAR(255),
+        date_range_start DATE,
+        date_range_end DATE,
+        ai_provider VARCHAR(50),
+        ai_model VARCHAR(100),
+        generation_ms INT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP NOT NULL
+      );
+    `);
+    
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS report_analytics_log (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        cache_key VARCHAR(64),
+        request_type VARCHAR(50) NOT NULL,
+        ai_provider VARCHAR(50),
+        ai_model VARCHAR(100),
+        generation_ms INT,
+        estimated_tokens INT,
+        error_message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
     await db.query(`
       CREATE TABLE IF NOT EXISTS teacher_attendance (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

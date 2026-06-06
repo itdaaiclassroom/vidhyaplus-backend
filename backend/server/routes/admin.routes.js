@@ -20,7 +20,9 @@ import {
   // Analytics
   getSubjectPerformance,
   // Audit Logs
-  getAuditLogs
+  getAuditLogs,
+  generateReportSummary,
+  getReportAnalytics
 } from "../controllers/admin_management.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -34,6 +36,8 @@ router.use(authorizeRole("admin"));
 router.get("/overview", getDashboardOverview);
 router.get("/analytics", getAnalyticsData);
 router.get("/performance/subjects", getSubjectPerformance);
+router.post("/reports/generate-summary", generateReportSummary);
+router.get("/reports/ai-analytics", getReportAnalytics);
 
 // ── Announcements ──────────────────────────────
 router.post("/announcements", createAnnouncement);

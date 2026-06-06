@@ -1,6 +1,7 @@
 import getPool from "../config/db.js";
 import bcrypt from "bcrypt";
 import { auditLog, actorFromReq } from "../utils/auditLogger.js";
+import { generateReport, getAnalyticsSummary } from "../services/reportSummary.service.js";
 
 const SALT_ROUNDS = 10;
 const ALLOWED_TEAM_ROLES = [
@@ -666,3 +667,30 @@ export async function getAuditLogs(req, res) {
     res.status(500).json({ error: String(err.message) });
   }
 }
+
+/**
+ * Generate Report Summary — uses caching, dedup, retry, and multi-provider AI
+ */
+export async function generateReportSummary(req, res) {
+  try {
+    const result = await generateReport(req.body);
+    res.json(result);
+  } catch (err) {
+    console.error("generateReportSummary controller error:", err);
+    res.status(500).json({ success: false, error: "Failed to generate report summary" });
+  }
+}
+
+/**
+ * Get Report AI Analytics — cache hits, token savings, etc.
+ */
+export async function getReportAnalytics(req, res) {
+  try {
+    const analytics = await getAnalyticsSummary();
+    res.json({ success: true, ...analytics });
+  } catch (err) {
+    console.error("getReportAnalytics error:", err);
+    res.status(500).json({ success: false, error: "Failed to fetch report analytics" });
+  }
+}
+
