@@ -3779,6 +3779,7 @@ app.put("/api/chapters/:id/textbook", async (req, res) => {
   const chapterId = Number(req.params.id);
   if (!chapterId) return res.status(400).json({ error: "chapter id required" });
   const { path: pathOnly, file: base64File, filename } = req.body || {};
+  let relativePath; // Fix B (textbook handler): same stale-state prevention
   try {
     // --- DELETE OLD TEXTBOOK FROM R2 BEFORE SAVING NEW ONE ---
     try {
@@ -3922,7 +3923,8 @@ app.put("/api/topics/:id/ppt", async (req, res) => {
   const db = getPool();
   const topicId = Number(req.params.id);
   if (!topicId) return res.status(400).json({ error: "topic id required" });
-  const { path: pathOnly, file: base64File, filename } = req.body || {};
+  const { path: pathOnly, file: base64File, filename, title: uploadedTitle } = req.body || {};
+  let relativePath; // Fix B: declare with let — prevents stale-state across concurrent requests
   try {
     // --- DELETE OLD PPT FROM R2 BEFORE SAVING NEW ONE ---
     try {
@@ -3974,15 +3976,17 @@ app.put("/api/topics/:id/ppt", async (req, res) => {
     relativePath = assetStorage.normalizeUploadKey(relativePath);
 
     await db.query("UPDATE topics SET topic_ppt_path = ? WHERE id = ?", [relativePath, topicId]);
+    // Fix C: use admin's uploaded title; fall back to auto-generated name only if none provided
+    const pptTitle = uploadedTitle?.trim() || `Topic ${topicId} PPT`;
     await db.query(
       "INSERT INTO topic_ppt_materials (topic_id, ppt_url, title) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE ppt_url = VALUES(ppt_url), title = VALUES(title)",
-      [topicId, relativePath, `Topic ${topicId} PPT`]
+      [topicId, relativePath, pptTitle]
     ).catch(async () => {
       const [rows] = await db.query("SELECT id FROM topic_ppt_materials WHERE topic_id = ? ORDER BY id DESC LIMIT 1", [topicId]).catch(() => [[]]);
       if (Array.isArray(rows) && rows[0]) {
-        await db.query("UPDATE topic_ppt_materials SET ppt_url = ?, title = ? WHERE id = ?", [relativePath, `Topic ${topicId} PPT`, rows[0].id]);
+        await db.query("UPDATE topic_ppt_materials SET ppt_url = ?, title = ? WHERE id = ?", [relativePath, pptTitle, rows[0].id]);
       } else {
-        await db.query("INSERT INTO topic_ppt_materials (topic_id, ppt_url, title) VALUES (?, ?, ?)", [topicId, relativePath, `Topic ${topicId} PPT`]);
+        await db.query("INSERT INTO topic_ppt_materials (topic_id, ppt_url, title) VALUES (?, ?, ?)", [topicId, relativePath, pptTitle]);
       }
     });
     res.json({ ok: true, path: relativePath, publicUrl: assetStorage.getPublicUrl(relativePath) });
