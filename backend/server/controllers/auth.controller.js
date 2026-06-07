@@ -179,7 +179,7 @@ export async function adminLogin(req, res) {
   try {
     const db = getPool();
     const [rows] = await db.query(
-      "SELECT id, email, name, role, password FROM admins WHERE email = ? LIMIT 1",
+      "SELECT id, email, name, role, permissions, password FROM admins WHERE email = ? LIMIT 1",
       [emailTrim]
     );
     const admin = Array.isArray(rows) && rows[0] ? rows[0] : null;
@@ -188,8 +188,24 @@ export async function adminLogin(req, res) {
     const ok = await verifyPassword(password, admin.password);
     if (!ok) return res.status(401).json({ error: "Invalid admin credentials" });
 
+    let parsedPermissions = {};
+    try {
+      if (typeof admin.permissions === 'string') {
+        parsedPermissions = JSON.parse(admin.permissions);
+      } else if (admin.permissions && typeof admin.permissions === 'object') {
+        parsedPermissions = admin.permissions;
+      }
+    } catch (e) {
+      console.warn("Failed to parse admin permissions JSON:", e);
+    }
+
     const token = jwt.sign(
-      { id: admin.id, email: admin.email, role: admin.role || "admin" },
+      { 
+        id: admin.id, 
+        email: admin.email, 
+        role: admin.role || "admin",
+        permissions: parsedPermissions 
+      },
       JWT_SECRET,
       { expiresIn: "24h" }
     );
@@ -201,6 +217,7 @@ export async function adminLogin(req, res) {
         email: admin.email,
         full_name: admin.name || admin.email,
         role: admin.role || "admin",
+        permissions: parsedPermissions
       }
     });
   } catch (err) {
