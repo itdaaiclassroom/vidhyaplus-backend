@@ -94,6 +94,20 @@ async function applyChanges() {
       console.error("Error applying trigger:", e.message);
     }
 
+    // 5. Create password_resets table
+    try {
+      await db.query(`CREATE TABLE IF NOT EXISTS password_resets (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        email VARCHAR(255) NOT NULL,
+        token VARCHAR(64) NOT NULL,
+        expires_at DATETIME NOT NULL,
+        created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB;`);
+      console.log("Created password_resets table.");
+    } catch (e) {
+      console.error("Error creating password_resets table:", e.message);
+    }
+
     console.log("All database changes applied successfully.");
     process.exit(0);
   } catch (error) {

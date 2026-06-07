@@ -37,6 +37,7 @@
     "jszip": "^3.10.1",
     "mediasoup": "^3.19.3",
     "mysql2": "^3.11.0",
+    "nodemailer": "^8.0.10",
     "qrcode": "^1.5.4",
     "react": "^19.2.5",
     "socket.io": "^4.8.3",
