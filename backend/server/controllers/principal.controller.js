@@ -7,14 +7,14 @@ export async function getPrincipalProfile(req, res) {
   const db = getPool();
   const principalId = req.user.id;
 
-  if (req.user && req.user.role === 'admin') {
+  if (req.user && (req.user.role === 'admin' || req.user.role === 'superadmin')) {
     return res.json({
       id: principalId,
       email: req.user.email || 'admin@example.com',
       full_name: 'Admin',
       school_id: Number(req.query.school_id || req.headers['x-school-id']) || 0,
       school_name: 'Admin Dashboard',
-      role: 'admin'
+      role: req.user.role
     });
   }
 
@@ -490,7 +490,7 @@ export async function updateTeacherSubjects(req, res) {
 
 // ── Helper: resolve principal's school_id from JWT ──
 async function getPrincipalSchoolId(req, db, principalId) {
-  if (req.user && req.user.role === 'admin') {
+  if (req.user && (req.user.role === 'admin' || req.user.role === 'superadmin')) {
     const sid = req.query.school_id || req.body.school_id || req.headers['x-school-id'];
     return sid ? Number(sid) : null;
   }
