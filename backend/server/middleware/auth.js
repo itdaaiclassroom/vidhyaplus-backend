@@ -41,8 +41,8 @@ export function authorizeRole(roles) {
     console.log(`[Auth] Path: ${req.path}, Required: ${allowedRoles}, Found: ${userRole}`);
 
     // Admins and Principals are often the same in this context, 
-    // but Admin always has super-access.
-    if (userRole === "admin" || allowedRoles.includes(userRole)) {
+    // but Superadmin and Admin always have super-access.
+    if (userRole === "superadmin" || userRole === "admin" || allowedRoles.includes(userRole)) {
       return next();
     }
 
@@ -51,6 +51,47 @@ export function authorizeRole(roles) {
       error: `Forbidden: Requires ${roles} role`, 
       found: userRole 
     });
+  };
+}
+
+/**
+ * Middleware to enforce granular feature permissions for Admins (Admin Teams).
+ * Superadmins (role: "superadmin" or "admin" with full access) bypass this.
+ * @param {string} feature The feature key (e.g. 'students', 'teachers')
+ * @param {'read'|'write'} requiredLevel The required access level
+ */
+export function requirePermission(feature, requiredLevel = 'read') {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const userRole = String(req.user.role || "").trim().toLowerCase();
+
+    // Superadmin bypass
+    if (userRole === "superadmin") {
+      return next();
+    }
+
+    // For regular Admins (Admin Teams)
+    if (userRole === "admin" || userRole === "team") {
+      const perms = req.user.permissions || {};
+      const userLevel = perms[feature] || 'none';
+
+      if (userLevel === 'none') {
+        return res.status(403).json({ error: `Forbidden: No access to ${feature}` });
+      }
+
+      if (requiredLevel === 'write' && userLevel !== 'write') {
+        return res.status(403).json({ error: `Forbidden: Write access required for ${feature}` });
+      }
+
+      // If requiredLevel is 'read', 'read' or 'write' userLevel is sufficient
+      return next();
+    }
+
+    // Fallback: If not superadmin or admin/team, deny
+    return res.status(403).json({ error: `Forbidden: Admin access required` });
   };
 }
 

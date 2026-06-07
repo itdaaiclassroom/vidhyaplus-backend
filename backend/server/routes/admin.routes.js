@@ -22,7 +22,10 @@ import {
   // Audit Logs
   getAuditLogs,
   generateReportSummary,
-  getReportAnalytics
+  getReportAnalytics,
+  // Profile
+  getAdminProfile,
+  updateAdminProfile
 } from "../controllers/admin_management.controller.js";
 import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
 
@@ -62,5 +65,9 @@ router.get("/teams/:id", getTeam);
 router.post("/teams", createTeam);
 router.put("/teams/:id", updateTeam);
 router.delete("/teams/:id", deleteTeam);
+
+// ── Profile ───────────────────────────────────
+router.get("/profile", getAdminProfile);
+router.put("/profile", updateAdminProfile);
 
 export default router;

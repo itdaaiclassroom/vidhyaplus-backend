@@ -227,9 +227,18 @@ export async function getAdmins(req, res) {
   const db = getPool();
   try {
     const [rows] = await db.query(
-      "SELECT id, name, email, role, created_at FROM admins ORDER BY created_at DESC"
+      "SELECT id, name, email, phone, location, mandal, district, role, designation, permissions, created_at FROM admins ORDER BY created_at DESC"
     );
-    res.json(rows);
+    // parse permissions string to JSON
+    const parsedRows = rows.map(r => {
+      let p = {};
+      try {
+        if (typeof r.permissions === 'string') p = JSON.parse(r.permissions);
+        else if (r.permissions) p = r.permissions;
+      } catch (e) {}
+      return { ...r, permissions: p };
+    });
+    res.json(parsedRows);
   } catch (err) {
     res.status(500).json({ error: String(err.message) });
   }
@@ -243,11 +252,18 @@ export async function getAdmin(req, res) {
 
   try {
     const [rows] = await db.query(
-      "SELECT id, name, email, role, created_at FROM admins WHERE id = ? LIMIT 1",
+      "SELECT id, name, email, phone, location, mandal, district, role, designation, permissions, created_at FROM admins WHERE id = ? LIMIT 1",
       [id]
     );
     if (!rows || rows.length === 0) return res.status(404).json({ error: "Admin not found" });
-    res.json(rows[0]);
+    
+    let p = {};
+    try {
+      if (typeof rows[0].permissions === 'string') p = JSON.parse(rows[0].permissions);
+      else if (rows[0].permissions) p = rows[0].permissions;
+    } catch (e) {}
+    
+    res.json({ ...rows[0], permissions: p });
   } catch (err) {
     res.status(500).json({ error: String(err.message) });
   }
@@ -256,7 +272,7 @@ export async function getAdmin(req, res) {
 /** POST /api/admin/management — create admin (password is bcrypt-hashed) */
 export async function createAdmin(req, res) {
   const db = getPool();
-  const { name, email, password, role } = req.body;
+  const { name, email, phone, location, mandal, district, password, role, permissions, designation } = req.body;
 
   if (!name || !email || !password) {
     return res.status(400).json({ error: "name, email and password are required" });
@@ -273,9 +289,11 @@ export async function createAdmin(req, res) {
     }
 
     const hashed = await hashPassword(password);
+    const permsJson = permissions ? JSON.stringify(permissions) : '{}';
+    
     const [result] = await db.query(
-      "INSERT INTO admins (name, email, password, role) VALUES (?, ?, ?, ?)",
-      [String(name).trim(), String(email).trim().toLowerCase(), hashed, role || "admin"]
+      "INSERT INTO admins (name, email, phone, location, mandal, district, password, role, permissions, designation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [String(name).trim(), String(email).trim().toLowerCase(), phone || null, location || null, mandal || null, district || null, hashed, role || "admin", permsJson, designation ? String(designation).trim() : null]
     );
 
     const newId = String(result.insertId);
@@ -295,7 +313,13 @@ export async function createAdmin(req, res) {
       id: newId,
       name: String(name).trim(),
       email: String(email).trim().toLowerCase(),
-      role: finalRole
+      role: finalRole,
+      phone: phone || null,
+      location: location || null,
+      mandal: mandal || null,
+      district: district || null,
+      designation: designation ? String(designation).trim() : null,
+      permissions: permissions || {}
     });
   } catch (err) {
     res.status(500).json({ error: String(err.message) });
@@ -308,7 +332,7 @@ export async function updateAdmin(req, res) {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ error: "id required" });
 
-  const { name, email, password, role } = req.body;
+  const { name, email, phone, location, mandal, district, password, role, permissions, designation } = req.body;
 
   try {
     const updates = [];
@@ -317,6 +341,10 @@ export async function updateAdmin(req, res) {
 
     if (name !== undefined) { updates.push("name = ?"); values.push(String(name).trim()); changedFields.name = String(name).trim(); }
     if (email !== undefined) { updates.push("email = ?"); values.push(String(email).trim().toLowerCase()); changedFields.email = String(email).trim().toLowerCase(); }
+    if (phone !== undefined) { updates.push("phone = ?"); values.push(phone); changedFields.phone = phone; }
+    if (location !== undefined) { updates.push("location = ?"); values.push(location); changedFields.location = location; }
+    if (mandal !== undefined) { updates.push("mandal = ?"); values.push(mandal); changedFields.mandal = mandal; }
+    if (district !== undefined) { updates.push("district = ?"); values.push(district); changedFields.district = district; }
     if (password !== undefined && password !== "") {
       const hashed = await hashPassword(password);
       updates.push("password = ?");
@@ -324,6 +352,16 @@ export async function updateAdmin(req, res) {
       changedFields.password = "[CHANGED]";
     }
     if (role !== undefined) { updates.push("role = ?"); values.push(String(role).trim()); changedFields.role = String(role).trim(); }
+    if (permissions !== undefined) {
+      updates.push("permissions = ?"); 
+      values.push(JSON.stringify(permissions));
+      changedFields.permissions = "[CHANGED]";
+    }
+    if (designation !== undefined) {
+      updates.push("designation = ?");
+      values.push(designation ? String(designation).trim() : null);
+      changedFields.designation = designation ? String(designation).trim() : null;
+    }
 
     if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
 
@@ -694,3 +732,70 @@ export async function getReportAnalytics(req, res) {
   }
 }
 
+/* ═══════════════════════════════════════════════
+   ADMIN PROFILE
+═══════════════════════════════════════════════ */
+
+export async function getAdminProfile(req, res) {
+  try {
+    const adminId = req.user.id;
+    if (!adminId) return res.status(401).json({ error: "Unauthorized" });
+
+    const db = getPool();
+    const [rows] = await db.query(
+      "SELECT id, name AS full_name, email, role, phone, location, language, designation FROM admins WHERE id = ?",
+      [adminId]
+    );
+
+    if (rows.length === 0) return res.status(404).json({ error: "Admin not found" });
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("getAdminProfile error:", err);
+    res.status(500).json({ error: "Failed to fetch profile" });
+  }
+}
+
+export async function updateAdminProfile(req, res) {
+  try {
+    const adminId = req.user.id;
+    if (!adminId) return res.status(401).json({ error: "Unauthorized" });
+
+    const { full_name, email, phone, location, language, password } = req.body;
+    const db = getPool();
+
+    // Check if email is being changed and already exists
+    if (email) {
+      const [emailCheck] = await db.query("SELECT id FROM admins WHERE email = ? AND id != ?", [email, adminId]);
+      if (emailCheck.length > 0) {
+        return res.status(400).json({ error: "Email already in use" });
+      }
+    }
+
+    const updates = [];
+    const values = [];
+
+    if (full_name !== undefined) { updates.push("name = ?"); values.push(full_name); }
+    if (email !== undefined) { updates.push("email = ?"); values.push(email); }
+    if (phone !== undefined) { updates.push("phone = ?"); values.push(phone); }
+    if (location !== undefined) { updates.push("location = ?"); values.push(location); }
+    if (language !== undefined) { updates.push("language = ?"); values.push(language); }
+
+    if (password) {
+      const hashed = await hashPassword(password);
+      updates.push("password = ?");
+      values.push(hashed);
+    }
+
+    if (updates.length > 0) {
+      values.push(adminId);
+      await db.query(`UPDATE admins SET ${updates.join(', ')} WHERE id = ?`, values);
+      auditLog(actorFromReq(req), "UPDATE", "admins", adminId, { updated_fields: updates.map(u => u.split(' ')[0]) });
+    }
+
+    res.json({ message: "Profile updated successfully" });
+  } catch (err) {
+    console.error("updateAdminProfile error:", err);
+    res.status(500).json({ error: "Failed to update profile" });
+  }
+}

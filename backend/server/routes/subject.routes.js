@@ -24,7 +24,7 @@ import {
   deleteCurriculumEntry,
   bulkDeleteCurriculumHandler as bulkDeleteCurriculumRoute,
 } from "../controllers/subject.controller.js";
-import { authenticateJWT, authorizeRole } from "../middleware/auth.js";
+import { authenticateJWT, authorizeRole, requirePermission } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -73,6 +73,7 @@ router.post(
   "/question-bank/bulk",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
+  requirePermission("materials", "write"),
   bulkUploadQuestions
 );
 
@@ -81,6 +82,7 @@ router.delete(
   "/question-bank/bulk",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
+  requirePermission("materials", "write"),
   bulkDeleteQuestionsHandler
 );
 
@@ -89,6 +91,7 @@ router.put(
   "/question-bank/:qid",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
+  requirePermission("materials", "write"),
   updateSubjectQuestion
 );
 
@@ -97,6 +100,7 @@ router.delete(
   "/question-bank/:qid",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
+  requirePermission("materials", "write"),
   deleteSubjectQuestion
 );
 
@@ -107,6 +111,7 @@ router.post(
   "/curriculum/bulk",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
+  requirePermission("materials", "write"),
   bulkUploadCurriculum
 );
 
@@ -115,6 +120,7 @@ router.delete(
   "/curriculum/bulk",
   authenticateJWT,
   authorizeRole(["admin", "material_management"]),
+  requirePermission("materials", "write"),
   bulkDeleteCurriculumRoute
 );
 
@@ -131,15 +137,16 @@ router.delete(
   "/curriculum/:id",
   authenticateJWT,
   authorizeRole(["admin", "material_management"]),
+  requirePermission("materials", "write"),
   deleteCurriculumEntry
 );
 
 // ── Subject CRUD ────────────────────────────────────────────────────────
 router.get("/", authenticateJWT, getSubjects);
-router.post("/", authenticateJWT, authorizeRole(["admin", "principal"]), createSubject);
+router.post("/", authenticateJWT, authorizeRole(["admin", "principal"]), requirePermission("materials", "write"), createSubject);
 router.get("/:id", authenticateJWT, getSubject);
-router.put("/:id", authenticateJWT, authorizeRole(["admin", "principal"]), updateSubject);
-router.delete("/:id", authenticateJWT, authorizeRole(["admin"]), deleteSubject);
+router.put("/:id", authenticateJWT, authorizeRole(["admin", "principal"]), requirePermission("materials", "write"), updateSubject);
+router.delete("/:id", authenticateJWT, authorizeRole(["admin"]), requirePermission("materials", "write"), deleteSubject);
 
 // Subject Materials
 // GET  — accessible by everyone with a valid JWT (admin, principal, teacher, student, material_management team)
@@ -155,6 +162,7 @@ router.post(
   "/:id/materials",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
+  requirePermission("materials", "write"),
   uploadSubjectMaterial
 );
 
@@ -163,6 +171,7 @@ router.delete(
   "/materials/:id",
   authenticateJWT,
   authorizeRole(["admin", "material_management"]),
+  requirePermission("materials", "write"),
   deleteSubjectMaterial
 );
 
@@ -189,6 +198,7 @@ router.post(
   "/:id/question-bank",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
+  requirePermission("materials", "write"),
   createSubjectQuestion
 );
 
