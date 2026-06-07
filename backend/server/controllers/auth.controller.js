@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
+import crypto from "crypto";
 import getPool from "../config/db.js";
 import "dotenv/config";
 
@@ -271,3 +272,145 @@ export async function teamLogin(req, res) {
     return res.status(500).json({ error: "Team login failed" });
   }
 }
+
+/**
+ * Forgot Password API
+ * POST /api/auth/forgot-password
+ */
+import { sendPasswordResetEmail } from "../utils/email.js";
+
+export async function forgotPassword(req, res) {
+  const emailTrim = req.body?.email != null ? String(req.body.email).trim() : "";
+  if (!emailTrim) {
+    return res.status(400).json({ error: "Email is required" });
+  }
+
+  try {
+    const db = getPool();
+    
+    // Check if the user exists in admins, teachers, or admin_teams
+    let userType = null;
+    let userId = null;
+    
+    // Try admins
+    let [rows] = await db.query("SELECT id FROM admins WHERE email = ? LIMIT 1", [emailTrim]);
+    if (rows && rows.length > 0) {
+      userType = "admin";
+      userId = rows[0].id;
+    } else {
+      // Try teachers/principals
+      [rows] = await db.query("SELECT id FROM teachers WHERE email = ? LIMIT 1", [emailTrim]);
+      if (rows && rows.length > 0) {
+        userType = "teacher";
+        userId = rows[0].id;
+      } else {
+        // Try admin_teams
+        [rows] = await db.query("SELECT id FROM admin_teams WHERE email = ? LIMIT 1", [emailTrim]);
+        if (rows && rows.length > 0) {
+          userType = "team";
+          userId = rows[0].id;
+        }
+      }
+    }
+
+    if (!userType) {
+      // Return a success message anyway to prevent email enumeration
+      return res.json({ message: "If an account with that email exists, we have sent a reset link." });
+    }
+
+    // Generate token
+    const token = crypto.randomBytes(32).toString("hex");
+    
+    // Expiration: 1 hour from now
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+    await db.query(
+      "INSERT INTO password_resets (email, token, expires_at) VALUES (?, ?, ?)",
+      [emailTrim, token, expiresAt]
+    );
+
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const resetUrl = `${frontendUrl}/reset-password?token=${token}&email=${encodeURIComponent(emailTrim)}`;
+
+    const emailSent = await sendPasswordResetEmail(emailTrim, resetUrl);
+
+    if (emailSent) {
+      return res.json({ message: "If an account with that email exists, we have sent a reset link." });
+    } else {
+      return res.status(500).json({ error: "Failed to send password reset email." });
+    }
+  } catch (err) {
+    console.error("Forgot password error:", err);
+    return res.status(500).json({ error: "An error occurred during password reset request." });
+  }
+}
+
+/**
+ * Reset Password API
+ * POST /api/auth/reset-password
+ */
+export async function resetPassword(req, res) {
+  const emailTrim = req.body?.email != null ? String(req.body.email).trim() : "";
+  const token = req.body?.token != null ? String(req.body.token).trim() : "";
+  const newPassword = req.body?.newPassword != null ? String(req.body.newPassword) : "";
+
+  if (!emailTrim || !token || !newPassword) {
+    return res.status(400).json({ error: "Email, token, and new password are required." });
+  }
+
+  try {
+    const db = getPool();
+    
+    // Check if token exists and is valid
+    const [rows] = await db.query(
+      "SELECT id, expires_at FROM password_resets WHERE email = ? AND token = ? LIMIT 1",
+      [emailTrim, token]
+    );
+
+    if (!rows || rows.length === 0) {
+      return res.status(400).json({ error: "Invalid or expired reset token." });
+    }
+
+    const resetRecord = rows[0];
+    if (new Date(resetRecord.expires_at) < new Date()) {
+      return res.status(400).json({ error: "Reset token has expired." });
+    }
+
+    // Determine which table the user is in
+    let tableToUpdate = null;
+    let [userRows] = await db.query("SELECT id FROM admins WHERE email = ? LIMIT 1", [emailTrim]);
+    if (userRows && userRows.length > 0) {
+      tableToUpdate = "admins";
+    } else {
+      [userRows] = await db.query("SELECT id FROM teachers WHERE email = ? LIMIT 1", [emailTrim]);
+      if (userRows && userRows.length > 0) {
+        tableToUpdate = "teachers";
+      } else {
+        [userRows] = await db.query("SELECT id FROM admin_teams WHERE email = ? LIMIT 1", [emailTrim]);
+        if (userRows && userRows.length > 0) {
+          tableToUpdate = "admin_teams";
+        }
+      }
+    }
+
+    if (!tableToUpdate) {
+      return res.status(400).json({ error: "User account not found." });
+    }
+
+    // Hash the new password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+    // Update password
+    await db.query(`UPDATE ${tableToUpdate} SET password = ? WHERE email = ?`, [hashedPassword, emailTrim]);
+
+    // Delete used token
+    await db.query("DELETE FROM password_resets WHERE id = ?", [resetRecord.id]);
+
+    return res.json({ message: "Password has been successfully reset." });
+  } catch (err) {
+    console.error("Reset password error:", err);
+    return res.status(500).json({ error: "An error occurred while resetting the password." });
+  }
+}
+

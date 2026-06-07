@@ -1,6 +1,7 @@
 import express from "express";
 import { 
   getPrincipalProfile, 
+  updatePrincipalProfile,
   registerTeacherByPrincipal, 
   registerStudentByPrincipal,
   getSchoolStudents,
@@ -26,6 +27,7 @@ router.use(authenticateJWT);
 router.use(authorizeRole("principal"));
 
 router.get("/profile", getPrincipalProfile);
+router.put("/profile", updatePrincipalProfile);
 router.post("/teachers", registerTeacherByPrincipal);
 router.post("/students", registerStudentByPrincipal);
 router.get("/schools/:schoolId/students", getSchoolStudents);

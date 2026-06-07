@@ -86,6 +86,15 @@ CREATE TABLE IF NOT EXISTS teachers (
   CONSTRAINT fk_teachers_subject FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
+-- Password resets table
+CREATE TABLE IF NOT EXISTS password_resets (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(255) NOT NULL,
+  token VARCHAR(64) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
 -- Admins can own multiple schools
 CREATE TABLE IF NOT EXISTS admin_schools (
   admin_id INT UNSIGNED NOT NULL,

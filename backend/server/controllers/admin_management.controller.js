@@ -743,7 +743,7 @@ export async function getAdminProfile(req, res) {
 
     const db = getPool();
     const [rows] = await db.query(
-      "SELECT id, name AS full_name, email, role, phone, location, language, designation FROM admins WHERE id = ?",
+      "SELECT id, name AS full_name, email, role, phone, location, language, designation, mandal, district, created_at FROM admins WHERE id = ?",
       [adminId]
     );
 
@@ -761,7 +761,7 @@ export async function updateAdminProfile(req, res) {
     const adminId = req.user.id;
     if (!adminId) return res.status(401).json({ error: "Unauthorized" });
 
-    const { full_name, email, phone, location, language, password } = req.body;
+    const { full_name, email, phone, location, language, password, mandal, district } = req.body;
     const db = getPool();
 
     // Check if email is being changed and already exists
@@ -780,6 +780,8 @@ export async function updateAdminProfile(req, res) {
     if (phone !== undefined) { updates.push("phone = ?"); values.push(phone); }
     if (location !== undefined) { updates.push("location = ?"); values.push(location); }
     if (language !== undefined) { updates.push("language = ?"); values.push(language); }
+    if (mandal !== undefined) { updates.push("mandal = ?"); values.push(mandal); }
+    if (district !== undefined) { updates.push("district = ?"); values.push(district); }
 
     if (password) {
       const hashed = await hashPassword(password);
