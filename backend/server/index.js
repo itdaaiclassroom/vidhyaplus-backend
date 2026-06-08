@@ -3936,13 +3936,13 @@ app.get("/api/topics/:id/materials", async (req, res) => {
 
   try {
     const [rows] = await db.query(
-      `SELECT id, topic_id, 'ppt' AS type, COALESCE(title,'PPT') AS title, ppt_url AS url, is_mandatory FROM topic_ppt_materials WHERE topic_id = ?
+      `SELECT id, topic_id, 'ppt' AS type, CONVERT(COALESCE(title,'PPT') USING utf8mb4) AS title, CONVERT(ppt_url USING utf8mb4) AS url, is_mandatory FROM topic_ppt_materials WHERE topic_id = ?
        UNION ALL
-       SELECT id, topic_id, 'pdf' AS type, COALESCE(title,'PDF') AS title, pdf_url AS url, is_mandatory FROM topic_pdf_materials WHERE topic_id = ?
+       SELECT id, topic_id, 'pdf' AS type, CONVERT(COALESCE(title,'PDF') USING utf8mb4) AS title, CONVERT(pdf_url USING utf8mb4) AS url, is_mandatory FROM topic_pdf_materials WHERE topic_id = ?
        UNION ALL
-       SELECT id, topic_id, 'youtube' AS type, COALESCE(title,'Video') AS title, url, is_mandatory FROM topic_youtube_links WHERE topic_id = ?
+       SELECT id, topic_id, 'youtube' AS type, CONVERT(COALESCE(title,'Video') USING utf8mb4) AS title, CONVERT(url USING utf8mb4) AS url, is_mandatory FROM topic_youtube_links WHERE topic_id = ?
        UNION ALL
-       SELECT id, topic_id, 'activity' AS type, COALESCE(title,'Activity') AS title, COALESCE(activity_url, description) AS url, is_mandatory FROM topic_activity_materials WHERE topic_id = ?`,
+       SELECT id, topic_id, 'activity' AS type, CONVERT(COALESCE(title,'Activity') USING utf8mb4) AS title, CONVERT(COALESCE(activity_url, description) USING utf8mb4) AS url, is_mandatory FROM topic_activity_materials WHERE topic_id = ?`,
       [topicId, topicId, topicId, topicId]
     );
 
