@@ -44,11 +44,16 @@ export async function deleteGrade(req, res) {
   try {
     const db = getPool();
     const { id } = req.params;
+    
+    // Force delete as requested by superadmin
+    await db.query("SET FOREIGN_KEY_CHECKS=0");
     await db.query("DELETE FROM grades WHERE id = ?", [id]);
+    await db.query("SET FOREIGN_KEY_CHECKS=1");
+    
     res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /api/curriculum/grades error:", err);
-    res.status(500).json({ error: "Failed to delete grade. Ensure no sections are linked to it." });
+    res.status(500).json({ error: "Failed to delete grade." });
   }
 }
 
