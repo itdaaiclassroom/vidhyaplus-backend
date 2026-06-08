@@ -90,8 +90,9 @@ export function requirePermission(feature, requiredLevel = 'read') {
       return next();
     }
 
-    // Fallback: If not superadmin or admin/team, deny
-    return res.status(403).json({ error: `Forbidden: Admin access required` });
+    // If not superadmin or admin/team, allow them through.
+    // The preceding authorizeRole middleware is responsible for blocking unauthorized non-admin roles.
+    return next();
   };
 }
 

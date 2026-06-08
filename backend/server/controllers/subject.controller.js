@@ -47,16 +47,45 @@ export async function createSubject(req, res) {
   try {
     // Check for duplicate name
     const [existing] = await db.query(
-      "SELECT id FROM subjects WHERE subject_name = ? LIMIT 1",
+      "SELECT id, grades, icon FROM subjects WHERE subject_name = ? LIMIT 1",
       [name]
     );
     if (existing && existing.length > 0) {
-      return res.status(409).json({ error: `Subject '${name}' already exists` });
+      const subjectId = existing[0].id;
+      const currentGradesStr = existing[0].grades || "";
+      
+      if (currentGradesStr) {
+        const currentGradesList = currentGradesStr.split(",").map(g => g.trim()).filter(Boolean);
+        const incomingGradesList = (Array.isArray(grades) ? grades : [grades]).map(g => String(g).trim()).filter(Boolean);
+        
+        // Merge without duplicates
+        const mergedGradesSet = new Set([...currentGradesList, ...incomingGradesList]);
+        const updatedGradesStr = Array.from(mergedGradesSet).join(",");
+        
+        await db.query("UPDATE subjects SET grades = ? WHERE id = ?", [updatedGradesStr, subjectId]);
+        
+        return res.status(200).json({
+          id: String(subjectId),
+          name,
+          grades: Array.from(mergedGradesSet).map(Number),
+          icon: existing[0].icon || '📚',
+          updated: true
+        });
+      } else {
+        // If grades column is null/empty, it's already available for all grades
+        return res.status(200).json({
+          id: String(subjectId),
+          name,
+          grades: null,
+          icon: existing[0].icon || '📚',
+          updated: false
+        });
+      }
     }
 
     const [result] = await db.query(
       "INSERT INTO subjects (subject_name, grades, icon) VALUES (?, ?, ?)",
-      [name, grades || null, icon || '📚']
+      [name, grades ? String(grades) : null, icon || '📚']
     );
     res.status(201).json({
       id: String(result.insertId),
@@ -101,10 +130,26 @@ export async function updateSubject(req, res) {
 export async function deleteSubject(req, res) {
   const db = getPool();
   const id = Number(req.params.id);
+  const gradeId = req.query.grade_id ? String(req.query.grade_id).trim() : null;
 
   if (!id) return res.status(400).json({ error: "id required" });
 
   try {
+    if (gradeId) {
+      const [rows] = await db.query("SELECT grades FROM subjects WHERE id = ? LIMIT 1", [id]);
+      if (rows && rows.length > 0) {
+        const gradesStr = rows[0].grades || "";
+        if (gradesStr) {
+          const gradesList = gradesStr.split(",").map(g => g.trim()).filter(g => g !== gradeId && g.length > 0);
+          if (gradesList.length > 0) {
+            const updatedGradesStr = gradesList.join(",");
+            await db.query("UPDATE subjects SET grades = ? WHERE id = ?", [updatedGradesStr, id]);
+            return res.json({ ok: true, disassociated: true });
+          }
+        }
+      }
+    }
+
     const [result] = await db.query("DELETE FROM subjects WHERE id = ?", [id]);
     res.json({ ok: true, deleted: result.affectedRows > 0 });
   } catch (err) {

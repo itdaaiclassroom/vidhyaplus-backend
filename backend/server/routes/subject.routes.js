@@ -58,6 +58,7 @@ router.get(
     if (req.user && req.user.role === "service") return next();
     return authorizeRole(["admin", "principal", "teacher", "material_management"])(req, res, next);
   },
+  requirePermission("question_bank", "read"),
   getQuestionBank
 );
 
@@ -73,7 +74,7 @@ router.post(
   "/question-bank/bulk",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
-  requirePermission("materials", "write"),
+  requirePermission("question_bank", "write"),
   bulkUploadQuestions
 );
 
@@ -82,7 +83,7 @@ router.delete(
   "/question-bank/bulk",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
-  requirePermission("materials", "write"),
+  requirePermission("question_bank", "write"),
   bulkDeleteQuestionsHandler
 );
 
@@ -91,7 +92,7 @@ router.put(
   "/question-bank/:qid",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
-  requirePermission("materials", "write"),
+  requirePermission("question_bank", "write"),
   updateSubjectQuestion
 );
 
@@ -100,7 +101,7 @@ router.delete(
   "/question-bank/:qid",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
-  requirePermission("materials", "write"),
+  requirePermission("question_bank", "write"),
   deleteSubjectQuestion
 );
 
@@ -189,6 +190,7 @@ router.get(
   "/:id/question-bank",
   authenticateJWT,
   authorizeRole(["admin", "principal", "teacher", "material_management"]),
+  requirePermission("question_bank", "read"),
   getSubjectQuestionBank
 );
 
@@ -198,7 +200,7 @@ router.post(
   "/:id/question-bank",
   authenticateJWT,
   authorizeRole(["admin", "principal", "material_management"]),
-  requirePermission("materials", "write"),
+  requirePermission("question_bank", "write"),
   createSubjectQuestion
 );
 

@@ -23,6 +23,7 @@ import adminManagementRoutes from "./routes/admin.routes.js";
 import subjectRoutes from "./routes/subject.routes.js";
 import gatingRoutes from "./routes/gating.routes.js";
 import reportcardRoutes from "./routes/reportcard.routes.js";
+import curriculumRoutes from "./routes/curriculum.routes.js";
 import http from "http";
 import { createWorkers } from "./mediasoup.js";
 import { setupSignaling } from "./signaling.js";
@@ -64,6 +65,7 @@ app.use("/api/admin", adminManagementRoutes);
 app.use("/api/subjects", subjectRoutes);
 app.use("/api/chapter-gating", gatingRoutes);
 app.use("/api/reportcard", reportcardRoutes);
+app.use("/api/curriculum", curriculumRoutes);
 // AI Proxy Routes
 app.post("/api/ai/ask", async (req, res) => {
   try {
@@ -628,6 +630,7 @@ app.get("/api/all", async (req, res) => {
       activityAssignmentsRows,
       activityParticipationRows,
       subjectMaterialsRows,
+      gradesRows,
     ] = await Promise.all([
       runQuery(
         db,
@@ -653,7 +656,7 @@ app.get("/api/all", async (req, res) => {
         db,
         "SELECT t.id, t.chapter_id, t.name, t.order_num, t.status, COALESCE(tpm.ppt_url, t.topic_ppt_path) AS topic_ppt_path FROM topics t LEFT JOIN (SELECT topic_id, MAX(id) AS latest_id FROM topic_ppt_materials GROUP BY topic_id) latest_tpm ON latest_tpm.topic_id = t.id LEFT JOIN topic_ppt_materials tpm ON tpm.id = latest_tpm.latest_id ORDER BY t.chapter_id, t.order_num"
       ),
-      runQuery(db, "SELECT id, topic_id, 'ppt' AS type, COALESCE(title,'PPT') AS title, ppt_url AS url FROM topic_ppt_materials"),
+      runQuery(db, "SELECT id, topic_id, 'ppt' AS type, COALESCE(title,'PPT') AS title, ppt_url AS url, is_mandatory FROM topic_ppt_materials UNION ALL SELECT id, topic_id, 'pdf' AS type, COALESCE(title,'PDF') AS title, pdf_url AS url, is_mandatory FROM topic_pdf_materials UNION ALL SELECT id, topic_id, 'youtube' AS type, COALESCE(title,'Video') AS title, url, is_mandatory FROM topic_youtube_links UNION ALL SELECT id, topic_id, 'activity' AS type, COALESCE(title,'Activity') AS title, COALESCE(activity_url, description) AS url, is_mandatory FROM topic_activity_materials"),
       runQuery(db, "SELECT id, topic_id, period_no, concept_text, plan_text FROM topic_micro_lessons ORDER BY topic_id, period_no"),
       runQuery(db, "SELECT id, id AS chapter_id FROM chapters WHERE 1=0"),
       runQuery(
@@ -682,8 +685,9 @@ app.get("/api/all", async (req, res) => {
       runQuery(db, "SELECT * FROM live_quiz_answers").catch(() => []),
       runQuery(db, "SELECT class_id, week_day, period_no, subject_name, subject_id, teacher_id, start_time, end_time FROM class_timetables ORDER BY class_id, week_day, period_no").catch(() => []),
       runQuery(db, "SELECT aa.id, aa.activity_id, aa.teacher_id, aa.class_id, aa.activity_date, aa.status, a.title, a.description FROM activity_assignments aa JOIN activities a ON a.id = aa.activity_id ORDER BY aa.activity_date DESC, aa.id DESC").catch(() => []),
-      runQuery(db, "SELECT activity_assignment_id, student_id, status FROM activity_participation").catch(() => []),
-      runQuery(db, "SELECT id, subject_id, grade_id, title, file_path AS url FROM subject_materials").catch(() => []),
+      runQuery(db, "SELECT activity_assignment_id, student_id, status FROM activity_participation"),
+      runQuery(db, "SELECT id, subject_id, grade_id, title, file_path AS url FROM subject_materials"),
+      runQuery(db, "SELECT id, grade_label FROM grades ORDER BY id").catch(() => []),
     ]);
 
     const teacherIdsBySchool = {};
@@ -1288,6 +1292,11 @@ app.get("/api/all", async (req, res) => {
     const totalQuizScore = studentQuizResults.reduce((sum, r) => sum + (r.score || 0), 0);
     engagementMetrics.quizCompletionRate = totalQuizAttempts > 0 ? Math.round((totalQuizScore / totalQuizAttempts) * 100) : 0;
 
+    const grades = (gradesRows || []).map((g) => ({
+      id: g.id,
+      grade_label: g.grade_label,
+    }));
+
     res.json({
       schools,
       classes,
@@ -1319,6 +1328,7 @@ app.get("/api/all", async (req, res) => {
       timetables,
       coCurricularActivities,
       subjectMaterials: subjectMaterialsRows,
+      grades,
     });
   } catch (err) {
     console.error("GET /api/all error:", err);
@@ -3918,28 +3928,50 @@ app.delete("/api/chapters/:id/textbook", async (req, res) => {
   }
 });
 
-// Admin: set or upload topic PPT (replaces existing).
-app.put("/api/topics/:id/ppt", async (req, res) => {
+// Admin: get all topic materials (PPT, PDF, YouTube, Activity)
+app.get("/api/topics/:id/materials", async (req, res) => {
   const db = getPool();
   const topicId = Number(req.params.id);
   if (!topicId) return res.status(400).json({ error: "topic id required" });
-  const { path: pathOnly, file: base64File, filename, title: uploadedTitle } = req.body || {};
-  let relativePath; // Fix B: declare with let — prevents stale-state across concurrent requests
-  try {
-    // --- DELETE OLD PPT FROM R2 BEFORE SAVING NEW ONE ---
-    try {
-      const [oldRows] = await db.query("SELECT topic_ppt_path FROM topics WHERE id = ?", [topicId]);
-      if (oldRows && oldRows[0] && oldRows[0].topic_ppt_path) {
-        await assetStorage.deleteUpload(oldRows[0].topic_ppt_path);
-        console.log("[ppt] Deleted old PPT from storage before replacement:", oldRows[0].topic_ppt_path);
-      }
-    } catch (e) {
-      console.warn("[ppt] Old file deletion failed/skipped:", e.message);
-    }
 
+  try {
+    const [rows] = await db.query(
+      `SELECT id, topic_id, 'ppt' AS type, COALESCE(title,'PPT') AS title, ppt_url AS url, is_mandatory FROM topic_ppt_materials WHERE topic_id = ?
+       UNION ALL
+       SELECT id, topic_id, 'pdf' AS type, COALESCE(title,'PDF') AS title, pdf_url AS url, is_mandatory FROM topic_pdf_materials WHERE topic_id = ?
+       UNION ALL
+       SELECT id, topic_id, 'youtube' AS type, COALESCE(title,'Video') AS title, url, is_mandatory FROM topic_youtube_links WHERE topic_id = ?
+       UNION ALL
+       SELECT id, topic_id, 'activity' AS type, COALESCE(title,'Activity') AS title, COALESCE(activity_url, description) AS url, is_mandatory FROM topic_activity_materials WHERE topic_id = ?`,
+      [topicId, topicId, topicId, topicId]
+    );
+
+    const materials = (rows || []).map((tm) => ({
+      id: String(tm.id),
+      type: tm.type || "doc",
+      title: tm.title || "",
+      url: tm.url || "#",
+      is_mandatory: Boolean(tm.is_mandatory),
+    }));
+
+    res.json(materials);
+  } catch (err) {
+    console.error("GET /api/topics/:id/materials error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+// Admin: upload topic PPT (appends)
+app.post("/api/topics/:id/ppt", async (req, res) => {
+  const db = getPool();
+  const topicId = Number(req.params.id);
+  if (!topicId) return res.status(400).json({ error: "topic id required" });
+  const { path: pathOnly, file: base64File, filename, title: uploadedTitle, is_mandatory = false } = req.body || {};
+  let relativePath;
+  try {
     if (base64File && typeof base64File === "string") {
       const ext = filename && /\.(pptx?|pdf)$/i.test(filename) ? path.extname(filename).toLowerCase() : ".pptx";
-      const safeName = `topic_${topicId}${ext}`;
+      const safeName = `topic_${topicId}_${Date.now()}${ext}`;
       const buf = Buffer.from(base64File, "base64");
       relativePath = path.join("ppt", safeName).replace(/\\/g, "/");
       const pptMime =
@@ -3950,7 +3982,6 @@ app.put("/api/topics/:id/ppt", async (req, res) => {
             : "application/vnd.openxmlformats-officedocument.presentationml.presentation";
       await assetStorage.saveUploadBuffer(relativePath, buf, pptMime);
 
-      // Attempt conversion for viewing if it's a PPTX and we have base64 locally
       if (ext === ".pptx" || ext === ".ppt") {
         const tmp = path.join(os.tmpdir(), safeName);
         try {
@@ -3970,54 +4001,181 @@ app.put("/api/topics/:id/ppt", async (req, res) => {
       }
     }
 
+    if (!relativePath && pathOnly) relativePath = pathOnly;
     if (!relativePath) return res.status(400).json({ error: "path or file required" });
 
-    // Normalize path
     relativePath = assetStorage.normalizeUploadKey(relativePath);
 
+    // Keep the topics table updated for legacy endpoints that still read from it
     await db.query("UPDATE topics SET topic_ppt_path = ? WHERE id = ?", [relativePath, topicId]);
-    // Fix C: use admin's uploaded title; fall back to auto-generated name only if none provided
+    
     const pptTitle = uploadedTitle?.trim() || `Topic ${topicId} PPT`;
-    await db.query(
-      "INSERT INTO topic_ppt_materials (topic_id, ppt_url, title) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE ppt_url = VALUES(ppt_url), title = VALUES(title)",
-      [topicId, relativePath, pptTitle]
-    ).catch(async () => {
-      const [rows] = await db.query("SELECT id FROM topic_ppt_materials WHERE topic_id = ? ORDER BY id DESC LIMIT 1", [topicId]).catch(() => [[]]);
-      if (Array.isArray(rows) && rows[0]) {
-        await db.query("UPDATE topic_ppt_materials SET ppt_url = ?, title = ? WHERE id = ?", [relativePath, pptTitle, rows[0].id]);
-      } else {
-        await db.query("INSERT INTO topic_ppt_materials (topic_id, ppt_url, title) VALUES (?, ?, ?)", [topicId, relativePath, pptTitle]);
-      }
-    });
-    res.json({ ok: true, path: relativePath, publicUrl: assetStorage.getPublicUrl(relativePath) });
+    const mandatoryInt = is_mandatory ? 1 : 0;
+    
+    // Insert new row instead of UPSERT
+    const [result] = await db.query(
+      "INSERT INTO topic_ppt_materials (topic_id, ppt_url, title, is_mandatory) VALUES (?, ?, ?, ?)",
+      [topicId, relativePath, pptTitle, mandatoryInt]
+    );
+
+    res.json({ ok: true, id: result.insertId, path: relativePath, publicUrl: assetStorage.getPublicUrl(relativePath) });
   } catch (err) {
-    console.error("PUT /api/topics/:id/ppt error:", err);
+    console.error("POST /api/topics/:id/ppt error:", err);
     res.status(500).json({ error: String(err.message) });
   }
 });
 
-/**
- * DELETE /api/topics/:id/ppt
- * Removes PPT reference from topics table and topic_ppt_materials.
- */
-app.delete("/api/topics/:id/ppt", async (req, res) => {
+// Admin: upload topic PDF (appends)
+app.post("/api/topics/:id/pdf", async (req, res) => {
   const db = getPool();
   const topicId = Number(req.params.id);
   if (!topicId) return res.status(400).json({ error: "topic id required" });
+  const { path: pathOnly, file: base64File, filename, title: uploadedTitle, is_mandatory = false } = req.body || {};
+  let relativePath;
   try {
-    const [rows] = await db.query("SELECT ppt_url FROM topic_ppt_materials WHERE topic_id = ?", [topicId]);
-    const record = Array.isArray(rows) && rows[0] ? rows[0] : null;
-    if (record?.ppt_url) {
-      await assetStorage.deleteUpload(record.ppt_url);
+    if (base64File && typeof base64File === "string") {
+      const ext = filename && filename.toLowerCase().endsWith(".pdf") ? ".pdf" : ".pdf";
+      const safeName = `topic_pdf_${topicId}_${Date.now()}${ext}`;
+      const buf = Buffer.from(base64File, "base64");
+      relativePath = path.join("topic_pdf", safeName).replace(/\\/g, "/");
+      await assetStorage.saveUploadBuffer(relativePath, buf, "application/pdf");
     }
-    await db.query("UPDATE topics SET topic_ppt_path = NULL WHERE id = ?", [topicId]);
-    await db.query("DELETE FROM topic_ppt_materials WHERE topic_id = ?", [topicId]);
-    res.json({ ok: true, message: "PPT deleted" });
+
+    if (!relativePath && pathOnly) relativePath = pathOnly;
+    if (!relativePath) return res.status(400).json({ error: "path or file required" });
+    relativePath = assetStorage.normalizeUploadKey(relativePath);
+
+    const pdfTitle = uploadedTitle?.trim() || `Topic ${topicId} PDF`;
+    const mandatoryInt = is_mandatory ? 1 : 0;
+    
+    const [result] = await db.query(
+      "INSERT INTO topic_pdf_materials (topic_id, pdf_url, title, is_mandatory) VALUES (?, ?, ?, ?)",
+      [topicId, relativePath, pdfTitle, mandatoryInt]
+    );
+    res.json({ ok: true, id: result.insertId, path: relativePath, publicUrl: assetStorage.getPublicUrl(relativePath) });
   } catch (err) {
-    console.error("DELETE /api/topics/:id/ppt error:", err);
+    console.error("POST /api/topics/:id/pdf error:", err);
     res.status(500).json({ error: String(err.message) });
   }
 });
+
+// Admin: upload topic Youtube link (appends)
+app.post("/api/topics/:id/youtube", async (req, res) => {
+  const db = getPool();
+  const topicId = Number(req.params.id);
+  if (!topicId) return res.status(400).json({ error: "topic id required" });
+  const { title, url, is_mandatory = false } = req.body || {};
+  if (!url) return res.status(400).json({ error: "url required" });
+
+  try {
+    const mandatoryInt = is_mandatory ? 1 : 0;
+    
+    // Get next order_num
+    const [[{ max_order }]] = await db.query(
+      "SELECT IFNULL(MAX(order_num), 0) AS max_order FROM topic_youtube_links WHERE topic_id = ?", 
+      [topicId]
+    );
+    const nextOrder = max_order + 1;
+
+    const [result] = await db.query(
+      "INSERT INTO topic_youtube_links (topic_id, title, url, order_num, is_mandatory) VALUES (?, ?, ?, ?, ?)",
+      [topicId, title || `Topic ${topicId} Video`, url, nextOrder, mandatoryInt]
+    );
+    res.json({ ok: true, id: result.insertId, message: "Youtube link saved" });
+  } catch (err) {
+    console.error("POST /api/topics/:id/youtube error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+// Admin: upload topic Activity material (appends)
+app.post("/api/topics/:id/activity", async (req, res) => {
+  const db = getPool();
+  const topicId = Number(req.params.id);
+  if (!topicId) return res.status(400).json({ error: "topic id required" });
+  const { path: pathOnly, file: base64File, filename, title, description, is_mandatory = false } = req.body || {};
+  let relativePath = null;
+  try {
+    if (base64File && typeof base64File === "string") {
+      const ext = filename ? path.extname(filename) : ".pdf";
+      const safeName = `topic_activity_${topicId}_${Date.now()}${ext}`;
+      const buf = Buffer.from(base64File, "base64");
+      relativePath = path.join("topic_activity", safeName).replace(/\\/g, "/");
+      const mime = ext === '.ppt' || ext === '.pptx' ? 'application/vnd.ms-powerpoint' : 'application/pdf';
+      await assetStorage.saveUploadBuffer(relativePath, buf, mime);
+    } else if (pathOnly) {
+      relativePath = pathOnly;
+    }
+
+    if (relativePath) {
+      relativePath = assetStorage.normalizeUploadKey(relativePath);
+    }
+
+    const mandatoryInt = is_mandatory ? 1 : 0;
+    const [result] = await db.query(
+      "INSERT INTO topic_activity_materials (topic_id, title, description, is_mandatory, activity_url) VALUES (?, ?, ?, ?, ?)",
+      [topicId, title || `Topic ${topicId} Activity`, description || null, mandatoryInt, relativePath]
+    );
+    res.json({ ok: true, id: result.insertId, message: "Activity material saved", path: relativePath, publicUrl: relativePath ? assetStorage.getPublicUrl(relativePath) : null });
+  } catch (err) {
+    console.error("POST /api/topics/:id/activity error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+// Admin: Delete individual materials
+app.delete("/api/topics/:topicId/materials/:type/:materialId", async (req, res) => {
+  const db = getPool();
+  const { topicId, type, materialId } = req.params;
+
+  try {
+    let tableName, urlColumn;
+    if (type === 'ppt') { tableName = 'topic_ppt_materials'; urlColumn = 'ppt_url'; }
+    else if (type === 'pdf') { tableName = 'topic_pdf_materials'; urlColumn = 'pdf_url'; }
+    else if (type === 'youtube') { tableName = 'topic_youtube_links'; urlColumn = null; }
+    else if (type === 'activity') { tableName = 'topic_activity_materials'; urlColumn = 'activity_url'; }
+    else return res.status(400).json({ error: "Invalid material type" });
+
+    // Delete file from R2 if applicable
+    if (urlColumn) {
+      const [rows] = await db.query(`SELECT ${urlColumn} FROM ${tableName} WHERE id = ? AND topic_id = ?`, [materialId, topicId]);
+      if (rows && rows[0] && rows[0][urlColumn]) {
+        await assetStorage.deleteUpload(rows[0][urlColumn]);
+      }
+    }
+
+    await db.query(`DELETE FROM ${tableName} WHERE id = ? AND topic_id = ?`, [materialId, topicId]);
+    res.json({ ok: true, message: `${type} material deleted` });
+  } catch (err) {
+    console.error(`DELETE /api/topics/:topicId/materials/${type}/:materialId error:`, err);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+// Admin: Toggle mandatory status for material
+app.patch("/api/topics/:topicId/materials/:type/:materialId/mandatory", async (req, res) => {
+  const db = getPool();
+  const { topicId, type, materialId } = req.params;
+  const { is_mandatory } = req.body;
+
+  try {
+    let tableName;
+    if (type === "ppt") tableName = "topic_ppt_materials";
+    else if (type === "pdf") tableName = "topic_pdf_materials";
+    else if (type === "youtube") tableName = "topic_youtube_links";
+    else if (type === "activity") tableName = "topic_activity_materials";
+    else return res.status(400).json({ error: "Invalid material type" });
+
+    await db.query(`UPDATE ${tableName} SET is_mandatory = ? WHERE id = ? AND topic_id = ?`, [is_mandatory ? 1 : 0, materialId, topicId]);
+
+    res.json({ ok: true, message: `Material mandatory status updated` });
+  } catch (err) {
+    console.error(`PATCH /api/topics/:topicId/materials/${type}/:materialId/mandatory error:`, err);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+// (Legacy bulk delete endpoints have been removed/replaced by specific deletes)
 
 // ─── Cloudflare R2 / Object Storage API ──────────────────────────────────────
 
