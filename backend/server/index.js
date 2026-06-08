@@ -3961,6 +3961,74 @@ app.get("/api/topics/:id/materials", async (req, res) => {
   }
 });
 
+// Admin: delete individual topic material
+app.delete("/api/topics/:id/materials/:type/:materialId", async (req, res) => {
+  const db = getPool();
+  const topicId = Number(req.params.id);
+  const materialId = Number(req.params.materialId);
+  const type = String(req.params.type).toLowerCase();
+
+  if (!topicId || !materialId || !type) {
+    return res.status(400).json({ error: "topic id, material type, and material id required" });
+  }
+
+  try {
+    let table = "";
+    if (type === "ppt") table = "topic_ppt_materials";
+    else if (type === "pdf") table = "topic_pdf_materials";
+    else if (type === "youtube") table = "topic_youtube_links";
+    else if (type === "activity") table = "topic_activity_materials";
+    else return res.status(400).json({ error: "Invalid material type" });
+
+    // Optional: Fetch to delete from storage if needed, but for now just DB delete
+    if (type === "ppt" || type === "pdf" || type === "activity") {
+      const col = type === "ppt" ? "ppt_url" : type === "pdf" ? "pdf_url" : "activity_url";
+      const [rows] = await db.query(`SELECT ${col} AS url FROM ${table} WHERE id = ? AND topic_id = ?`, [materialId, topicId]);
+      if (rows && rows.length > 0 && rows[0].url) {
+        try {
+          await assetStorage.deleteUpload(rows[0].url);
+        } catch (e) {
+          console.warn(`[materials] Could not delete physical file for ${type}:`, e.message);
+        }
+      }
+    }
+
+    const [result] = await db.query(`DELETE FROM ${table} WHERE id = ? AND topic_id = ?`, [materialId, topicId]);
+    res.json({ ok: true, deleted: result.affectedRows > 0 });
+  } catch (err) {
+    console.error(`DELETE /api/topics/:id/materials/:type/:materialId error:`, err);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
+// Admin: toggle mandatory status
+app.patch("/api/topics/:id/materials/:type/:materialId/mandatory", async (req, res) => {
+  const db = getPool();
+  const topicId = Number(req.params.id);
+  const materialId = Number(req.params.materialId);
+  const type = String(req.params.type).toLowerCase();
+  const is_mandatory = Boolean(req.body.is_mandatory) ? 1 : 0;
+
+  if (!topicId || !materialId || !type) {
+    return res.status(400).json({ error: "topic id, material type, and material id required" });
+  }
+
+  try {
+    let table = "";
+    if (type === "ppt") table = "topic_ppt_materials";
+    else if (type === "pdf") table = "topic_pdf_materials";
+    else if (type === "youtube") table = "topic_youtube_links";
+    else if (type === "activity") table = "topic_activity_materials";
+    else return res.status(400).json({ error: "Invalid material type" });
+
+    const [result] = await db.query(`UPDATE ${table} SET is_mandatory = ? WHERE id = ? AND topic_id = ?`, [is_mandatory, materialId, topicId]);
+    res.json({ ok: true, updated: result.affectedRows > 0 });
+  } catch (err) {
+    console.error(`PATCH /api/topics/:id/materials/:type/:materialId/mandatory error:`, err);
+    res.status(500).json({ error: String(err.message) });
+  }
+});
+
 // Admin: upload topic PPT (appends)
 app.post("/api/topics/:id/ppt", async (req, res) => {
   const db = getPool();
