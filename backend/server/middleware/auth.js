@@ -78,11 +78,6 @@ export function requirePermission(feature, requiredLevel = 'read') {
       const perms = req.user.permissions || {};
       let userLevel = perms[feature] || 'none';
 
-      // Backward compatibility: If an Admin doesn't have explicit question_bank permissions yet, grant them access.
-      if (userRole === "admin" && feature === "question_bank" && userLevel === 'none') {
-        userLevel = 'write';
-      }
-
       if (userLevel === 'none') {
         return res.status(403).json({ error: `Forbidden: No access to ${feature}` });
       }
