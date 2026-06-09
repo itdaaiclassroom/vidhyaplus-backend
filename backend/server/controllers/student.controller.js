@@ -639,11 +639,11 @@ export async function getStudentQuizQuestions(req, res) {
     }
 
     // 4. Build query for subject_quiz_bank
-    let sql = \`
+    let sql = `
       SELECT id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation 
       FROM subject_quiz_bank 
       WHERE subject_id = ? AND grade = ? AND (assigned_for = 'student' or assigned_for = 'both')
-\`;
+`;
     const params = [subjectId, grade];
 
     if (topicName) {
