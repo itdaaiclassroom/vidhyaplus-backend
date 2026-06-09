@@ -634,7 +634,7 @@ app.get("/api/all", async (req, res) => {
     ] = await Promise.all([
       runQuery(
         db,
-        "SELECT sc.id, sc.school_name AS name, sc.school_code AS code, COALESCE(sc.district, '') AS district, COALESCE(sc.mandal, '') AS mandal, GREATEST(COALESCE(sc.sessions_completed, 0), COALESCE(ls_cnt.sessions_completed, 0)) AS sessions_completed, COALESCE(sc.active_status, 1) AS active_status FROM schools sc LEFT JOIN (SELECT sec.school_id, COUNT(*) AS sessions_completed FROM live_sessions ls JOIN sections sec ON sec.id = ls.class_id WHERE ls.status = 'ended' GROUP BY sec.school_id) ls_cnt ON ls_cnt.school_id = sc.id"
+        "SELECT sc.id, sc.school_name AS name, sc.school_code AS code, COALESCE(sc.district, '') AS district, COALESCE(sc.mandal, '') AS mandal, GREATEST(COALESCE(sc.sessions_completed, 0), COALESCE(ls_cnt.sessions_completed, 0)) AS sessions_completed, COALESCE(sc.active_status, 1) AS active_status, t.full_name AS principal_name, t.email AS principal_email FROM schools sc LEFT JOIN (SELECT sec.school_id, COUNT(*) AS sessions_completed FROM live_sessions ls JOIN sections sec ON sec.id = ls.class_id WHERE ls.status = 'ended' GROUP BY sec.school_id) ls_cnt ON ls_cnt.school_id = sc.id LEFT JOIN teachers t ON t.school_id = sc.id AND t.role = 'principal'"
       ),
       runQuery(
         db,
@@ -661,7 +661,7 @@ app.get("/api/all", async (req, res) => {
       runQuery(db, "SELECT id, id AS chapter_id FROM chapters WHERE 1=0"),
       runQuery(
         db,
-        "SELECT id, student_id, chapter_id, assessment_type, score, total, assessed_on AS taken_on FROM student_marks ORDER BY assessed_on DESC, id DESC"
+        "SELECT id, student_id, subject_id, chapter_id, assessment_type, score, total, detailed_answers, assessed_on AS taken_on FROM student_marks ORDER BY assessed_on DESC, id DESC"
       ),
       runQuery(db, "SELECT * FROM attendance"),
       db.query("SELECT * FROM teacher_leaves").then(([r]) => r).catch(() => []),
@@ -798,6 +798,8 @@ app.get("/api/all", async (req, res) => {
       classes: schoolClassCount[toId(s.id)] || 0,
       sessionsCompleted: s.sessions_completed ?? 0,
       activeStatus: Boolean(s.active_status),
+      principalName: s.principal_name || "",
+      principalEmail: s.principal_email || "",
     }));
 
     const classes = classesRows.map((c) => ({
@@ -816,6 +818,11 @@ app.get("/api/all", async (req, res) => {
       schoolId: toId(t.school_id),
       classIds: teacherIdsByClass[toId(t.id)] || [],
       subjects: Array.from(teacherSubjectNames[toId(t.id)] || []),
+      phone: t.phone || "",
+      designation: t.designation || "",
+      skills: t.skills || "",
+      experience: t.experience || "",
+      highest_qualification: t.highest_qualification || "",
     }));
 
     const subjects = subjectsRows.map((s) => {
@@ -855,8 +862,10 @@ app.get("/api/all", async (req, res) => {
     }));
 
     const studentQuizResults = quizResultsRows.map((r) => ({
+      id: toId(r.id),
       studentId: toId(r.student_id),
-      chapterId: toId(r.chapter_id != null ? r.chapter_id : r.quiz_id),
+      subjectId: r.subject_id ? toId(r.subject_id) : undefined,
+      chapterId: r.chapter_id != null ? toId(r.chapter_id) : undefined,
       assessmentType: r.assessment_type || 'assessment',
       score: Number(r.score) || 0,
       total: Number(r.total) || 0,
@@ -865,7 +874,7 @@ app.get("/api/all", async (req, res) => {
           ? r.taken_on.toISOString().slice(0, 10)
           : String(r.taken_on).slice(0, 10)
         : null,
-      answers: [],
+      detailedAnswers: typeof r.detailed_answers === 'string' ? JSON.parse(r.detailed_answers) : r.detailed_answers || [],
     }));
 
     const avgPctByStudent = {};
@@ -3516,42 +3525,45 @@ app.post("/api/ai/ask", async (req, res) => {
 // Chapter-level marks (feeds studentQuizResults on GET /api/all)
 app.post("/api/student-marks", async (req, res) => {
   const db = getPool();
-  const { studentId, chapterId, score, total, assessedOn, assessmentType, liveQuizSessionId, subjectId: payloadSubjectId } = req.body || {};
+  const { studentId, chapterId, score, total, assessedOn, assessmentType, liveQuizSessionId, subjectId, detailedAnswers } = req.body || {};
   const sid = Number(studentId);
-  const cid = Number(chapterId);
+  const cid = chapterId ? Number(chapterId) : null;
+  const subid = subjectId ? Number(subjectId) : null;
   const sc = Number(score);
   const tot = Number(total);
   const lqid = liveQuizSessionId != null && liveQuizSessionId !== "" ? Number(liveQuizSessionId) : null;
-  if (!sid || !cid || Number.isNaN(sc) || Number.isNaN(tot) || tot < 1) {
-    return res.status(400).json({ error: "studentId, chapterId, score, total (total >= 1) required" });
+  
+  if (!sid || (!cid && !subid) || Number.isNaN(sc) || Number.isNaN(tot) || tot < 1) {
+    return res.status(400).json({ error: "studentId, (chapterId or subjectId), score, total (total >= 1) required" });
   }
   const dateStr = assessedOn ? String(assessedOn).slice(0, 10) : new Date().toISOString().slice(0, 10);
   const atype = (assessmentType && String(assessmentType).slice(0, 64)) || "assessment";
+  const detailedAnswersStr = detailedAnswers ? JSON.stringify(detailedAnswers) : null;
+
   try {
     const [r] = await db.query(
-      lqid
-        ? "INSERT INTO student_marks (student_id, chapter_id, assessment_type, score, total, assessed_on, live_quiz_session_id) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE score = VALUES(score), total = VALUES(total), assessed_on = VALUES(assessed_on)"
-        : "INSERT INTO student_marks (student_id, chapter_id, assessment_type, score, total, assessed_on) VALUES (?, ?, ?, ?, ?, ?)",
-      lqid
-        ? [sid, cid, atype, Math.min(sc, tot), tot, dateStr, lqid]
-        : [sid, cid, atype, Math.min(sc, tot), tot, dateStr]
+      `INSERT INTO student_marks 
+        (student_id, subject_id, chapter_id, assessment_type, score, total, assessed_on, live_quiz_session_id, detailed_answers) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) 
+       ON DUPLICATE KEY UPDATE score = VALUES(score), total = VALUES(total), assessed_on = VALUES(assessed_on), detailed_answers = VALUES(detailed_answers)`,
+      [sid, subid, cid, atype, Math.min(sc, tot), tot, dateStr, lqid, detailedAnswersStr]
     );
 
     // Propagate changes to student_exam_marks and update performance summary if this is an exam type
     try {
-      let subjectId = payloadSubjectId ? Number(payloadSubjectId) : null;
-      if (!subjectId) {
+      let resolvedSubId = subid;
+      if (!resolvedSubId && cid) {
         const [chapRows] = await db.query("SELECT subject_id FROM chapters WHERE id = ? LIMIT 1", [cid]);
-        subjectId = chapRows && chapRows[0] ? chapRows[0].subject_id : null;
+        resolvedSubId = chapRows && chapRows[0] ? chapRows[0].subject_id : null;
       }
-      if (subjectId) {
+      if (resolvedSubId) {
         const examType = atype.toUpperCase();
-        const validExamTypes = ['FA1', 'FA2', 'FA3', 'FA4', 'SA1', 'SA2', 'QUIZ'];
+        const validExamTypes = ['FA1', 'FA2', 'FA3', 'FA4', 'SA1', 'SA2', 'QUIZ', 'SELF_STUDY'];
         if (validExamTypes.includes(examType)) {
           const academicYear = "2024-25";
           const [existing] = await db.query(
             "SELECT id FROM student_exam_marks WHERE student_id = ? AND subject_id = ? AND exam_type = ? AND academic_year = ? LIMIT 1",
-            [sid, subjectId, examType, academicYear]
+            [sid, resolvedSubId, examType, academicYear]
           );
           if (existing && existing[0]) {
             await db.query(
@@ -3561,7 +3573,7 @@ app.post("/api/student-marks", async (req, res) => {
           } else {
             await db.query(
               "INSERT INTO student_exam_marks (student_id, subject_id, exam_type, marks_obtained, max_marks, academic_year) VALUES (?, ?, ?, ?, ?, ?)",
-              [sid, subjectId, examType, Math.min(sc, tot), tot, academicYear]
+              [sid, resolvedSubId, examType, Math.min(sc, tot), tot, academicYear]
             );
           }
           
@@ -3574,7 +3586,7 @@ app.post("/api/student-marks", async (req, res) => {
       console.error("Error syncing marks to exam marks or updating summary:", syncErr);
     }
 
-    res.json({ ok: true, id: r.insertId, studentId: sid, chapterId: cid, score: sc, total: tot, assessedOn: dateStr, liveQuizSessionId: lqid || null });
+    res.json({ ok: true, id: r.insertId, studentId: sid, subjectId: subid, chapterId: cid, score: sc, total: tot, assessedOn: dateStr, liveQuizSessionId: lqid || null });
   } catch (err) {
     console.error("POST /api/student-marks error:", err);
     res.status(500).json({ error: String(err.message) });
@@ -3587,15 +3599,23 @@ app.get("/api/student-marks", async (req, res) => {
   try {
     if (studentId) {
       const [rows] = await db.query(
-        "SELECT sm.id, sm.student_id, sm.chapter_id, sm.assessment_type, sm.score, sm.total, sm.assessed_on, sm.live_quiz_session_id, c.chapter_name, s.subject_name FROM student_marks sm JOIN chapters c ON c.id = sm.chapter_id JOIN subjects s ON s.id = c.subject_id WHERE sm.student_id = ? ORDER BY sm.assessed_on DESC, sm.id DESC",
+        "SELECT sm.id, sm.student_id, sm.subject_id, sm.chapter_id, sm.assessment_type, sm.score, sm.total, sm.assessed_on, sm.live_quiz_session_id, sm.detailed_answers, c.chapter_name, s.subject_name FROM student_marks sm LEFT JOIN chapters c ON c.id = sm.chapter_id LEFT JOIN subjects s ON s.id = COALESCE(sm.subject_id, c.subject_id) WHERE sm.student_id = ? ORDER BY sm.assessed_on DESC, sm.id DESC",
         [studentId]
       );
-      return res.json({ marks: rows });
+      const mapped = rows.map(r => ({
+        ...r,
+        detailed_answers: typeof r.detailed_answers === 'string' ? JSON.parse(r.detailed_answers) : r.detailed_answers
+      }));
+      return res.json({ marks: mapped });
     }
     const [rows] = await db.query(
-      "SELECT sm.id, sm.student_id, sm.chapter_id, sm.assessment_type, sm.score, sm.total, sm.assessed_on, sm.live_quiz_session_id FROM student_marks sm ORDER BY sm.student_id, sm.assessed_on DESC LIMIT 5000"
+      "SELECT sm.id, sm.student_id, sm.subject_id, sm.chapter_id, sm.assessment_type, sm.score, sm.total, sm.assessed_on, sm.live_quiz_session_id, sm.detailed_answers FROM student_marks sm ORDER BY sm.student_id, sm.assessed_on DESC LIMIT 5000"
     );
-    res.json({ marks: rows });
+    const mapped = rows.map(r => ({
+      ...r,
+      detailed_answers: typeof r.detailed_answers === 'string' ? JSON.parse(r.detailed_answers) : r.detailed_answers
+    }));
+    res.json({ marks: mapped });
   } catch (err) {
     console.error("GET /api/student-marks error:", err);
     res.status(500).json({ error: String(err.message) });

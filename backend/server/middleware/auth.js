@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import "dotenv/config";
+import { getPool } from "../config/db.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || "your_super_secret_key_here";
 
@@ -12,13 +13,92 @@ export function authenticateJWT(req, res, next) {
   if (authHeader) {
     const token = authHeader.split(" ")[1]; // Bearer <token>
 
-    jwt.verify(token, JWT_SECRET, (err, user) => {
+    jwt.verify(token, JWT_SECRET, async (err, decodedUser) => {
       if (err) {
         return res.status(403).json({ error: "Forbidden: Invalid token" });
       }
 
-      req.user = user;
-      next();
+      try {
+        const db = getPool();
+        const role = String(decodedUser.role || "").trim().toLowerCase();
+        const userId = decodedUser.id;
+
+        if (!userId) {
+          return res.status(401).json({ error: "Unauthorized: Invalid token payload" });
+        }
+
+        let dbUser = null;
+
+        // Query the database based on user role to fetch real-time data and status
+        if (role === "superadmin" || role === "admin") {
+          const [rows] = await db.query(
+            "SELECT id, role, permissions FROM admins WHERE id = ? LIMIT 1",
+            [userId]
+          );
+          if (rows && rows.length > 0) {
+            dbUser = rows[0];
+            let parsedPermissions = {};
+            try {
+              if (typeof dbUser.permissions === "string") {
+                parsedPermissions = JSON.parse(dbUser.permissions);
+              } else if (dbUser.permissions && typeof dbUser.permissions === "object") {
+                parsedPermissions = dbUser.permissions;
+              }
+            } catch (e) {
+              console.warn("Failed to parse admin permissions in JWT verify:", e);
+            }
+            dbUser.permissions = parsedPermissions;
+          }
+        } else if (role === "teacher" || role === "principal") {
+          const [rows] = await db.query(
+            "SELECT id, role, school_id FROM teachers WHERE id = ? LIMIT 1",
+            [userId]
+          );
+          if (rows && rows.length > 0) {
+            dbUser = rows[0];
+          }
+        } else if (role === "student") {
+          const [rows] = await db.query(
+            "SELECT id, school_id FROM students WHERE id = ? LIMIT 1",
+            [userId]
+          );
+          if (rows && rows.length > 0) {
+            dbUser = rows[0];
+            dbUser.role = "student";
+          }
+        } else if (decodedUser.type === "team" || role === "team" || role === "material_management" || role === "school_management" || role === "student_management" || role === "teacher_management") {
+          const [rows] = await db.query(
+            "SELECT id, role, district, is_active FROM admin_teams WHERE id = ? LIMIT 1",
+            [userId]
+          );
+          if (rows && rows.length > 0) {
+            const team = rows[0];
+            if (team.is_active === 1) {
+              dbUser = team;
+            }
+          }
+        }
+
+        // If user was deleted or deactivated, block immediately
+        if (!dbUser) {
+          return res.status(401).json({ error: "Unauthorized: User session invalid or account inactive/deleted" });
+        }
+
+        // Overwrite token values with dynamic real-time values from the DB
+        req.user = {
+          ...decodedUser,
+          role: dbUser.role || decodedUser.role,
+          school_id: dbUser.school_id !== undefined ? dbUser.school_id : decodedUser.school_id,
+          permissions: dbUser.permissions !== undefined ? dbUser.permissions : decodedUser.permissions,
+          district: dbUser.district !== undefined ? dbUser.district : decodedUser.district
+        };
+
+        next();
+      } catch (dbErr) {
+        console.error("[Auth Middleware] Database verification failed, falling back to token payload:", dbErr);
+        req.user = decodedUser;
+        next();
+      }
     });
   } else {
     res.status(401).json({ error: "Unauthorized: Token required" });
