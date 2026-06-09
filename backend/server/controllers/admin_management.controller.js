@@ -743,13 +743,25 @@ export async function getAdminProfile(req, res) {
 
     const db = getPool();
     const [rows] = await db.query(
-      "SELECT id, name AS full_name, email, role, phone, location, language, designation, mandal, district, created_at FROM admins WHERE id = ?",
+      "SELECT id, name AS full_name, email, role, permissions, phone, location, language, designation, mandal, district, created_at FROM admins WHERE id = ?",
       [adminId]
     );
 
     if (rows.length === 0) return res.status(404).json({ error: "Admin not found" });
 
-    res.json(rows[0]);
+    const admin = rows[0];
+    let parsedPermissions = {};
+    try {
+      if (typeof admin.permissions === 'string') {
+        parsedPermissions = JSON.parse(admin.permissions);
+      } else if (admin.permissions && typeof admin.permissions === 'object') {
+        parsedPermissions = admin.permissions;
+      }
+    } catch (e) {
+      console.warn("Failed to parse admin permissions in profile get:", e);
+    }
+
+    res.json({ ...admin, permissions: parsedPermissions });
   } catch (err) {
     console.error("getAdminProfile error:", err);
     res.status(500).json({ error: "Failed to fetch profile" });
@@ -792,7 +804,14 @@ export async function updateAdminProfile(req, res) {
     if (updates.length > 0) {
       values.push(adminId);
       await db.query(`UPDATE admins SET ${updates.join(', ')} WHERE id = ?`, values);
-      auditLog(actorFromReq(req), "UPDATE", "admins", adminId, { updated_fields: updates.map(u => u.split(' ')[0]) });
+      await auditLog(db, {
+        ...actorFromReq(req),
+        action: "UPDATE",
+        entity: "admin",
+        entity_id: String(adminId),
+        meta: { updated_fields: updates.map(u => u.split(' ')[0]) },
+        req,
+      });
     }
 
     res.json({ message: "Profile updated successfully" });

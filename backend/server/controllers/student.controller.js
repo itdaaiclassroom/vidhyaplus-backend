@@ -586,3 +586,83 @@ export async function updateStudentAttendance(req, res) {
     res.status(500).json({ error: "Failed to update attendance" });
   }
 }
+
+export async function getStudentQuizQuestions(req, res) {
+  const db = getPool();
+  const studentId = req.user.id;
+  const subjectId = req.query.subject_id ? Number(req.query.subject_id) : null;
+  const chapterId = req.query.chapter_id ? Number(req.query.chapter_id) : null;
+  const topicId = req.query.topic_id ? Number(req.query.topic_id) : null;
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || "10", 10)));
+
+  if (!subjectId) {
+    return res.status(400).json({ error: "subject_id is required" });
+  }
+
+  try {
+    // 1. Fetch student's grade
+    const [studentRows] = await db.query(
+      `SELECT sec.grade_id 
+       FROM students s 
+       JOIN sections sec ON s.section_id = sec.id 
+       WHERE s.id = ? LIMIT 1`,
+      [studentId]
+    );
+
+    if (!studentRows || studentRows.length === 0) {
+      return res.status(404).json({ error: "Student profile or grade not found" });
+    }
+    const grade = studentRows[0].grade_id;
+
+    // 2. Fetch chapter name if chapter_id is provided
+    let chapterName = null;
+    if (chapterId) {
+      const [chapRows] = await db.query(
+        "SELECT chapter_name FROM chapters WHERE id = ? LIMIT 1",
+        [chapterId]
+      );
+      if (chapRows && chapRows[0]) {
+        chapterName = chapRows[0].chapter_name;
+      }
+    }
+
+    // 3. Fetch topic name if topic_id is provided
+    let topicName = null;
+    if (topicId) {
+      const [topRows] = await db.query(
+        "SELECT name FROM topics WHERE id = ? LIMIT 1",
+        [topicId]
+      );
+      if (topRows && topRows[0]) {
+        topicName = topRows[0].name;
+      }
+    }
+
+    // 4. Build query for subject_quiz_bank
+    let sql = \`
+      SELECT id, question_text, option_a, option_b, option_c, option_d, correct_option, explanation 
+      FROM subject_quiz_bank 
+      WHERE subject_id = ? AND grade = ? AND (assigned_for = 'student' or assigned_for = 'both')
+\`;
+    const params = [subjectId, grade];
+
+    if (topicName) {
+      sql += " AND topic_name = ?";
+      params.push(topicName);
+    } else if (chapterName) {
+      sql += " AND chapter = ?";
+      params.push(chapterName);
+    }
+
+    sql += " ORDER BY RAND() LIMIT ?";
+    params.push(limit);
+
+    const [questions] = await db.query(sql, params);
+
+    res.json({ questions });
+  } catch (err) {
+    console.error("getStudentQuizQuestions error:", err);
+    res.status(500).json({ error: String(err.message) });
+  }
+}
+

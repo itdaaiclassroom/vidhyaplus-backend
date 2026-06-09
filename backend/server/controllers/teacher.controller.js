@@ -35,7 +35,11 @@ export async function createTeacher(req, res) {
 export async function updateTeacher(req, res) {
   const db = getPool();
   const id = Number(req.params.id);
-  const { full_name, email, school_id, password } = req.body || {};
+  const {
+    full_name, email, school_id, password,
+    phone, designation, skills, experience, highest_qualification,
+    assigned_class_ids, assigned_subject_ids
+  } = req.body || {};
   if (!id) return res.status(400).json({ error: "id required" });
   try {
     const updates = [];
@@ -50,9 +54,39 @@ export async function updateTeacher(req, res) {
       values.push(plain);
       changedFields.password = "[CHANGED]";
     }
-    if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
-    values.push(id);
-    await db.query(`UPDATE teachers SET ${updates.join(", ")} WHERE id = ?`, values);
+    if (phone !== undefined) { updates.push("phone = ?"); values.push(phone ? String(phone).trim() : ""); changedFields.phone = phone; }
+    if (designation !== undefined) { updates.push("designation = ?"); values.push(designation ? String(designation).trim() : ""); changedFields.designation = designation; }
+    if (skills !== undefined) { updates.push("skills = ?"); values.push(skills ? String(skills).trim() : ""); changedFields.skills = skills; }
+    if (experience !== undefined) { updates.push("experience = ?"); values.push(experience ? String(experience).trim() : ""); changedFields.experience = experience; }
+    if (highest_qualification !== undefined) { updates.push("highest_qualification = ?"); values.push(highest_qualification ? String(highest_qualification).trim() : ""); changedFields.highest_qualification = highest_qualification; }
+
+    if (assigned_class_ids !== undefined) {
+      updates.push("assigned_class_ids = ?");
+      values.push(assigned_class_ids ? JSON.stringify(assigned_class_ids) : null);
+      changedFields.assigned_class_ids = assigned_class_ids;
+    }
+    if (assigned_subject_ids !== undefined) {
+      updates.push("assigned_subject_ids = ?");
+      values.push(assigned_subject_ids ? JSON.stringify(assigned_subject_ids) : null);
+      changedFields.assigned_subject_ids = assigned_subject_ids;
+    }
+
+    if (updates.length > 0) {
+      values.push(id);
+      await db.query(`UPDATE teachers SET ${updates.join(", ")} WHERE id = ?`, values);
+    }
+
+    // Sync subjects in teacher_subjects table if updated
+    if (assigned_subject_ids !== undefined && Array.isArray(assigned_subject_ids)) {
+      await db.query("DELETE FROM teacher_subjects WHERE teacher_id = ?", [id]);
+      for (const subjectId of assigned_subject_ids) {
+        await db.query(
+          "INSERT INTO teacher_subjects (teacher_id, subject_id) VALUES (?, ?)",
+          [id, Number(subjectId)]
+        );
+      }
+    }
+
     await auditLog(db, {
       ...actorFromReq(req),
       action: "UPDATE", entity: "teacher", entity_id: String(id),
