@@ -180,7 +180,7 @@ export async function adminLogin(req, res) {
   try {
     const db = getPool();
     const [rows] = await db.query(
-      "SELECT id, email, name, role, permissions, password FROM admins WHERE email = ? LIMIT 1",
+      "SELECT id, sequence_no, email, name, role, permissions, password FROM admins WHERE email = ? LIMIT 1",
       [emailTrim]
     );
     const admin = Array.isArray(rows) && rows[0] ? rows[0] : null;
@@ -203,6 +203,7 @@ export async function adminLogin(req, res) {
     const token = jwt.sign(
       { 
         id: admin.id, 
+        sequence_no: admin.sequence_no,
         email: admin.email, 
         role: admin.role || "admin",
         permissions: parsedPermissions 
@@ -215,6 +216,7 @@ export async function adminLogin(req, res) {
       token,
       user: {
         id: String(admin.id),
+        sequence_no: admin.sequence_no,
         email: admin.email,
         full_name: admin.name || admin.email,
         role: admin.role || "admin",
