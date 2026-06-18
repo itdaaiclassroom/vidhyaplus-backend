@@ -31,7 +31,7 @@ export async function principalLogin(req, res) {
   try {
     const db = getPool();
     const [rows] = await db.query(
-      "SELECT id, email, full_name, school_id, role, password FROM teachers WHERE email = ? AND role = 'principal' LIMIT 1",
+      "SELECT * FROM teachers WHERE email = ? AND role = 'principal' LIMIT 1",
       [emailTrim]
     );
 
@@ -83,7 +83,7 @@ export async function teacherLogin(req, res) {
   try {
     const db = getPool();
     const [rows] = await db.query(
-      "SELECT id, email, full_name, school_id, role, password FROM teachers WHERE email = ? LIMIT 1",
+      "SELECT * FROM teachers WHERE email = ? LIMIT 1",
       [emailTrim]
     );
     const teacher = Array.isArray(rows) && rows[0] ? rows[0] : null;
@@ -130,11 +130,11 @@ export async function studentLogin(req, res) {
     let query, params;
     
     if (identifier.includes("@")) {
-      query = "SELECT id, first_name, last_name, school_id, password FROM students WHERE email = ? LIMIT 1";
+      query = "SELECT * FROM students WHERE email = ? LIMIT 1";
       params = [identifier];
     } else {
       const numericId = parseInt(identifier, 10);
-      query = "SELECT id, first_name, last_name, school_id, password FROM students WHERE id = ? OR roll_no = ? LIMIT 1";
+      query = "SELECT * FROM students WHERE id = ? OR roll_no = ? LIMIT 1";
       params = [Number.isNaN(numericId) ? -1 : numericId, identifier];
     }
 
@@ -180,7 +180,7 @@ export async function adminLogin(req, res) {
   try {
     const db = getPool();
     const [rows] = await db.query(
-      "SELECT id, sequence_no, email, name, role, permissions, password FROM admins WHERE email = ? LIMIT 1",
+      "SELECT * FROM admins WHERE email = ? LIMIT 1",
       [emailTrim]
     );
     const admin = Array.isArray(rows) && rows[0] ? rows[0] : null;
@@ -243,7 +243,7 @@ export async function teamLogin(req, res) {
   try {
     const db = getPool();
     const [rows] = await db.query(
-      "SELECT id, team_name, email, role, district, password FROM admin_teams WHERE email = ? AND is_active = 1 LIMIT 1",
+      "SELECT * FROM admin_teams WHERE email = ? AND is_active = 1 LIMIT 1",
       [emailTrim]
     );
     const team = Array.isArray(rows) && rows[0] ? rows[0] : null;
