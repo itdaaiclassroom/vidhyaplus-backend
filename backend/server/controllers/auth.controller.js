@@ -180,7 +180,7 @@ export async function adminLogin(req, res) {
   try {
     const db = getPool();
     const [rows] = await db.query(
-      "SELECT id, sequence_no, email, name, role, permissions, password FROM admins WHERE email = ? LIMIT 1",
+      "SELECT * FROM admins WHERE email = ? LIMIT 1",
       [emailTrim]
     );
     const admin = Array.isArray(rows) && rows[0] ? rows[0] : null;
