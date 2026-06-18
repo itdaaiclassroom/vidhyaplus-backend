@@ -81,11 +81,23 @@ export async function updateChapter(req, res) {
   try {
     const db = getPool();
     const { id } = req.params;
-    const { chapter_no, chapter_name } = req.body;
+    const { chapter_no, chapter_name, subject_id, grade_id, learning_intent } = req.body;
+    
+    const [[existing]] = await db.query(
+      "SELECT chapter_no, chapter_name, subject_id, grade_id, teaching_plan_summary FROM chapters WHERE id = ?",
+      [id]
+    );
+    if (!existing) return res.status(404).json({ error: "Chapter not found" });
+
+    const finalNo = chapter_no !== undefined ? chapter_no : existing.chapter_no;
+    const finalName = chapter_name !== undefined ? chapter_name : existing.chapter_name;
+    const finalSubj = subject_id !== undefined ? subject_id : existing.subject_id;
+    const finalGrade = grade_id !== undefined ? grade_id : existing.grade_id;
+    const finalIntent = learning_intent !== undefined ? learning_intent : existing.teaching_plan_summary;
     
     await db.query(
-      "UPDATE chapters SET chapter_no = ?, chapter_name = ? WHERE id = ?",
-      [chapter_no, chapter_name, id]
+      "UPDATE chapters SET chapter_no = ?, chapter_name = ?, subject_id = ?, grade_id = ?, teaching_plan_summary = ? WHERE id = ?",
+      [finalNo, finalName, finalSubj, finalGrade, finalIntent, id]
     );
     res.json({ ok: true });
   } catch (err) {

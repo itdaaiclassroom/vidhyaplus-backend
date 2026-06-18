@@ -1189,7 +1189,16 @@ export async function getCurriculumStructure(req, res) {
     const chapterIds = chapters.map(c => c.chapter_id);
     const placeholders = chapterIds.map(() => '?').join(',');
     const [topics] = await db.query(
-      `SELECT id, chapter_id, name AS topic_name, order_num AS topic_order, status
+      `SELECT id, chapter_id, name AS topic_name, order_num AS topic_order,
+              (
+                SELECT CASE 
+                  WHEN COUNT(CASE WHEN ls.status IN ('ended', 'completed') THEN 1 END) > 0 THEN 'completed'
+                  WHEN COUNT(CASE WHEN ls.status IN ('active', 'ongoing') THEN 1 END) > 0 THEN 'in_progress'
+                  ELSE 'not_started'
+                END
+                FROM live_sessions ls
+                WHERE ls.topic_id = topics.id
+              ) AS status
        FROM topics
        WHERE chapter_id IN (${placeholders})
        ORDER BY chapter_id, order_num, name`,

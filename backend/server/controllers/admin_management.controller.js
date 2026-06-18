@@ -227,7 +227,7 @@ export async function getAdmins(req, res) {
   const db = getPool();
   try {
     const [rows] = await db.query(
-      "SELECT id, name, email, phone, location, mandal, district, role, designation, permissions, created_at FROM admins ORDER BY created_at DESC"
+      "SELECT id, sequence_no, name, email, phone, location, mandal, district, role, designation, permissions, created_at FROM admins ORDER BY created_at DESC"
     );
     // parse permissions string to JSON
     const parsedRows = rows.map(r => {
@@ -252,7 +252,7 @@ export async function getAdmin(req, res) {
 
   try {
     const [rows] = await db.query(
-      "SELECT id, name, email, phone, location, mandal, district, role, designation, permissions, created_at FROM admins WHERE id = ? LIMIT 1",
+      "SELECT id, sequence_no, name, email, phone, location, mandal, district, role, designation, permissions, created_at FROM admins WHERE id = ? LIMIT 1",
       [id]
     );
     if (!rows || rows.length === 0) return res.status(404).json({ error: "Admin not found" });
@@ -290,27 +290,34 @@ export async function createAdmin(req, res) {
 
     const hashed = await hashPassword(password);
     const permsJson = permissions ? JSON.stringify(permissions) : '{}';
+    const finalRole = role || "admin";
+
+    const [[maxRow]] = await db.query(
+      "SELECT MAX(sequence_no) as maxSeq FROM admins WHERE role = ?",
+      [finalRole]
+    );
+    const nextSeq = (maxRow?.maxSeq || 0) + 1;
     
     const [result] = await db.query(
-      "INSERT INTO admins (name, email, phone, location, mandal, district, password, role, permissions, designation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [String(name).trim(), String(email).trim().toLowerCase(), phone || null, location || null, mandal || null, district || null, hashed, role || "admin", permsJson, designation ? String(designation).trim() : null]
+      "INSERT INTO admins (name, email, phone, location, mandal, district, password, role, permissions, designation, sequence_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [String(name).trim(), String(email).trim().toLowerCase(), phone || null, location || null, mandal || null, district || null, hashed, finalRole, permsJson, designation ? String(designation).trim() : null, nextSeq]
     );
 
     const newId = String(result.insertId);
-    const finalRole = role || "admin";
 
     await auditLog(db, {
       ...actorFromReq(req),
       action:    "CREATE",
       entity:    "admin",
       entity_id: newId,
-      meta:      { name: String(name).trim(), email: String(email).trim().toLowerCase(), role: finalRole },
+      meta:      { name: String(name).trim(), email: String(email).trim().toLowerCase(), role: finalRole, sequence_no: nextSeq },
       req,
     });
 
     res.status(201).json({
       ok: true,
       id: newId,
+      sequence_no: nextSeq,
       name: String(name).trim(),
       email: String(email).trim().toLowerCase(),
       role: finalRole,
@@ -339,6 +346,20 @@ export async function updateAdmin(req, res) {
     const values = [];
     const changedFields = {};
 
+    let roleChanged = false;
+    let nextSeq = null;
+    if (role !== undefined) {
+      const [[currentAdmin]] = await db.query("SELECT role FROM admins WHERE id = ?", [id]);
+      if (currentAdmin && currentAdmin.role !== String(role).trim()) {
+        roleChanged = true;
+        const [[maxRow]] = await db.query(
+          "SELECT MAX(sequence_no) as maxSeq FROM admins WHERE role = ?",
+          [String(role).trim()]
+        );
+        nextSeq = (maxRow?.maxSeq || 0) + 1;
+      }
+    }
+
     if (name !== undefined) { updates.push("name = ?"); values.push(String(name).trim()); changedFields.name = String(name).trim(); }
     if (email !== undefined) { updates.push("email = ?"); values.push(String(email).trim().toLowerCase()); changedFields.email = String(email).trim().toLowerCase(); }
     if (phone !== undefined) { updates.push("phone = ?"); values.push(phone); changedFields.phone = phone; }
@@ -351,7 +372,16 @@ export async function updateAdmin(req, res) {
       values.push(hashed);
       changedFields.password = "[CHANGED]";
     }
-    if (role !== undefined) { updates.push("role = ?"); values.push(String(role).trim()); changedFields.role = String(role).trim(); }
+    if (role !== undefined) { 
+      updates.push("role = ?"); 
+      values.push(String(role).trim()); 
+      changedFields.role = String(role).trim(); 
+      if (roleChanged) {
+        updates.push("sequence_no = ?");
+        values.push(nextSeq);
+        changedFields.sequence_no = nextSeq;
+      }
+    }
     if (permissions !== undefined) {
       updates.push("permissions = ?"); 
       values.push(JSON.stringify(permissions));
@@ -743,7 +773,7 @@ export async function getAdminProfile(req, res) {
 
     const db = getPool();
     const [rows] = await db.query(
-      "SELECT id, name AS full_name, email, role, permissions, phone, location, language, designation, mandal, district, created_at FROM admins WHERE id = ?",
+      "SELECT id, sequence_no, name AS full_name, email, role, permissions, phone, location, language, designation, mandal, district, created_at FROM admins WHERE id = ?",
       [adminId]
     );
 

@@ -997,6 +997,18 @@ app.get("/api/all", async (req, res) => {
       return { studentId: s.id, present, total, percentage };
     });
 
+    const rawAttendance = (attendanceRows || []).map((a) => ({
+      id: toId(a.id),
+      studentId: toId(a.student_id),
+      classId: toId(a.class_id),
+      date: a.attendance_date
+        ? a.attendance_date instanceof Date
+          ? a.attendance_date.toISOString().slice(0, 10)
+          : String(a.attendance_date).slice(0, 10)
+        : "",
+      status: a.status,
+    }));
+
     const studyMaterials = (studyMaterialsRows || []).map((m) => ({
       id: toId(m.id),
       chapterId: toId(m.chapter_id),
@@ -1094,7 +1106,7 @@ app.get("/api/all", async (req, res) => {
     const dailyActiveStudents = [];
     const dateCount = {};
     (attendanceRows || []).forEach((a) => {
-      const d = a.date ? String(a.date).slice(0, 10) : null;
+      const d = a.attendance_date ? String(a.attendance_date).slice(0, 10) : null;
       if (!d) return;
       if (!dateCount[d]) dateCount[d] = new Set();
       dateCount[d].add(a.student_id);
@@ -1321,6 +1333,7 @@ app.get("/api/all", async (req, res) => {
       classRecordings,
       homework,
       studentAttendance,
+      rawAttendance,
       studyMaterials,
       liveSessions,
       chapterQuizzes,
